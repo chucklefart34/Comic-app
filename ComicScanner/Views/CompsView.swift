@@ -15,6 +15,9 @@ final class CompsModel {
     var verdicts: [CompVerdict] = []
     var stats: PriceStats?
 
+    var outlook: [GradeOutlook] = []
+    var loadingGraded = false
+
     var included: [CompVerdict] { verdicts.filter(\.included) }
     var excluded: [CompVerdict] { verdicts.filter { !$0.included } }
 
@@ -63,6 +66,34 @@ final class CompsModel {
         let result = CompMatcher.evaluate(listings, spec: spec, options: Prefs.compOptions, overrides: overrides)
         verdicts = result.verdicts
         stats = result.stats
+        outlook = Self.gradingOutlook(for: spec, listings: listings)
+    }
+
+    /// Graded sales already in the pool for the same book, grade by grade (raw books only).
+    static func gradingOutlook(for spec: ComicSpec, listings: [SoldListing]) -> [GradeOutlook] {
+        guard !spec.graded else { return [] }
+        return [9.8, 9.6, 9.4, 9.2, 9.0, 8.5, 8.0].compactMap { grade in
+            var slab = spec
+            slab.graded = true
+            slab.company = .cgc
+            slab.grade = grade
+            slab.label = spec.signed ? .signatureSeries : .universal
+            guard let stats = CompMatcher.evaluate(listings, spec: slab, options: Prefs.compOptions).stats else { return nil }
+            return GradeOutlook(grade: grade, stats: stats)
+        }
+    }
+
+    /// Fetches CGC sales of this book so the grading check has something to compare.
+    func loadGraded(spec: ComicSpec, bot: WebBot) async {
+        loadingGraded = true
+        defer { loadingGraded = false }
+        do {
+            let graded = try await EbaySoldSearch.soldListings(query: spec.broadQuery + " cgc", bot: bot, comicsOnly: Prefs.searchComicsOnly)
+            listings = merge(listings, graded)
+            recompute(spec: spec)
+        } catch {
+            if !error.isCancellation { note = error.localizedDescription }
+        }
     }
 }
 
@@ -72,9 +103,13 @@ struct CompsView: View {
     var item: CollectionItem? = nil
 
     @Environment(WebBot.self) private var bot
+    @Environment(DealCart.self) private var cart
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.popToRoot) private var popToRoot
     @State private var model = CompsModel()
     @State private var saved = false
+    @State private var addedToDeal = false
+    @State private var gradingChecked = false
     @State private var showExcluded = false
 
     var body: some View {
@@ -128,6 +163,8 @@ struct CompsView: View {
             case .loaded:
                 summarySection
                 saveSection
+                if let item { ItemDetailsSection(item: item) }
+                gradingSection
                 compsSections
             }
 
@@ -206,13 +243,105 @@ struct CompsView: View {
 
     private var saveSection: some View {
         Section {
-            Button {
-                save()
-            } label: {
-                Label(item == nil ? (saved ? "Added to collection" : "Add to collection") : (saved ? "Value updated" : "Update collection value"),
-                      systemImage: saved ? "checkmark.circle.fill" : "plus.circle.fill")
+            if let item {
+                if item.status != .sold {
+                    Button {
+                        cart.addOutgoing(item)
+                        addedToDeal = true
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    } label: {
+                        Label(addedToDeal ? "In the deal" : "Sell or trade this book · \(formatCents(item.sellPriceCents ?? 0))",
+                              systemImage: addedToDeal ? "checkmark.circle.fill" : "cart.badge.plus")
+                            .font(.headline)
+                    }
+                    .disabled(addedToDeal)
+                }
+                Button {
+                    save()
+                } label: {
+                    Label(saved ? "Value updated" : "Update market value", systemImage: saved ? "checkmark.circle.fill" : "arrow.clockwise.circle")
+                }
+                .disabled(saved || model.stats == nil)
+            } else {
+                Button {
+                    addToDeal()
+                } label: {
+                    Label(addedToDeal ? "Added to deal" : dealButtonTitle,
+                          systemImage: addedToDeal ? "checkmark.circle.fill" : "cart.badge.plus")
+                        .font(.headline)
+                }
+                .disabled(addedToDeal)
+                Button {
+                    save()
+                } label: {
+                    Label(saved ? "Added to inventory" : "Add to my inventory",
+                          systemImage: saved ? "checkmark.circle.fill" : "plus.circle")
+                }
+                .disabled(saved)
             }
-            .disabled(saved)
+        } footer: {
+            if item == nil, !cart.lines.isEmpty {
+                Text("Open deal: \(cart.kind.rawValue.lowercased()), \(cart.lines.count) book\(cart.lines.count == 1 ? "" : "s").")
+            }
+        }
+    }
+
+    private var dealButtonTitle: String {
+        let verb = cart.kind == .buy ? "Buy" : "Trade in"
+        let offer = cart.offer(for: model.stats?.averageCents)
+        return model.stats == nil ? "\(verb) — set price in deal" : "\(verb) · offer \(formatCents(offer))"
+    }
+
+    private func addToDeal() {
+        cart.addIncoming(spec: spec, marketCents: model.stats?.averageCents, imageURL: coverForSaving)
+        addedToDeal = true
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        if Prefs.returnToScanner { popToRoot() }
+    }
+
+    private var coverForSaving: String? {
+        spec.coverImageURL.isEmpty ? model.included.first?.listing.largeImageURL?.absoluteString : spec.coverImageURL
+    }
+
+    @ViewBuilder
+    private var gradingSection: some View {
+        if !spec.graded, let raw = model.stats {
+            Section {
+                if model.outlook.isEmpty {
+                    if model.loadingGraded {
+                        HStack(spacing: 10) { ProgressView(); Text("Checking CGC sales…") }
+                    } else if gradingChecked {
+                        Text("No CGC sales of this book found yet.").foregroundStyle(.secondary)
+                    } else {
+                        Button {
+                            gradingChecked = true
+                            Task { await model.loadGraded(spec: spec, bot: bot) }
+                        } label: {
+                            Label("Check graded prices", systemImage: "rosette")
+                        }
+                    }
+                } else {
+                    ForEach(model.outlook) { row in
+                        let gain = row.stats.averageCents - Prefs.gradingFeeCents - raw.averageCents
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("CGC \(String(format: "%.1f", row.grade))").font(.subheadline.weight(.semibold))
+                                Text("\(row.stats.count) sale\(row.stats.count == 1 ? "" : "s") · avg \(formatCents(row.stats.averageCents))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text("\(gain >= 0 ? "+" : "−")\(formatCents(abs(gain)))")
+                                .font(.subheadline.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(gain > 0 ? .green : .red)
+                        }
+                    }
+                }
+            } header: {
+                Text("Worth grading?")
+            } footer: {
+                Text("Gain vs. selling raw (\(formatCents(raw.averageCents))) after a \(formatCents(Prefs.gradingFeeCents)) grading cost. Only counts if your copy would actually get that grade.")
+            }
         }
     }
 
@@ -247,11 +376,76 @@ struct CompsView: View {
             item.update(spec: spec)
             item.apply(model.stats)
         } else {
-            let image = spec.coverImageURL.isEmpty ? model.included.first?.listing.imageURL?.absoluteString : spec.coverImageURL
-            modelContext.insert(CollectionItem(spec: spec, stats: model.stats, imageURL: image))
+            let newItem = CollectionItem(spec: spec, stats: model.stats, imageURL: coverForSaving)
+            newItem.status = .collection
+            modelContext.insert(newItem)
         }
         saved = true
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+}
+
+struct GradeOutlook: Identifiable, Hashable {
+    let grade: Double
+    let stats: PriceStats
+    var id: Double { grade }
+}
+
+/// Your copy: keep or sell, what you paid, asking price, which box it's in.
+struct ItemDetailsSection: View {
+    @Bindable var item: CollectionItem
+
+    var body: some View {
+        Section("Your copy") {
+            Picker("Status", selection: Binding(get: { item.status }, set: { item.status = $0 })) {
+                ForEach(ItemStatus.allCases) { Text($0.rawValue).tag($0) }
+            }
+            CentsField(title: "You paid", cents: $item.costCents)
+            CentsField(title: "Asking price", cents: $item.askingCents, placeholder: item.valueCents.map { DealLineRow.dollars($0) } ?? "")
+            TextField("Box or binder", text: Binding(get: { item.boxName }, set: { item.boxName = $0 }))
+            if item.status == .sold, let sold = item.soldCents {
+                LabeledContent("Sold for", value: formatCents(sold))
+                if let cost = item.costCents {
+                    LabeledContent("Profit", value: formatCents(sold - cost))
+                }
+            } else if let value = item.valueCents, let cost = item.costCents {
+                LabeledContent("Gain vs. market", value: "\(value >= cost ? "+" : "−")\(formatCents(abs(value - cost)))")
+            }
+        }
+    }
+}
+
+/// A dollar amount field backed by optional cents.
+struct CentsField: View {
+    let title: String
+    @Binding var cents: Int?
+    var placeholder = ""
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 2) {
+                Text("$").foregroundStyle(.secondary)
+                TextField(placeholder.isEmpty ? "0" : placeholder, text: $text)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 110)
+                    .focused($focused)
+            }
+        }
+        .onAppear { text = cents.map(DealLineRow.dollars) ?? "" }
+        .onChange(of: focused) { _, isFocused in
+            guard !isFocused else { return }
+            let cleaned = text.replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "$", with: "").trimmed
+            if cleaned.isEmpty {
+                cents = nil
+            } else if let value = Double(cleaned) {
+                cents = Int((value * 100).rounded())
+            } else {
+                text = cents.map(DealLineRow.dollars) ?? ""
+            }
+        }
     }
 }
 

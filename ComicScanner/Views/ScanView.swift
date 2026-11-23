@@ -4,7 +4,10 @@ import AVFoundation
 import Vision
 
 struct ScanView: View {
+    @Environment(DealCart.self) private var cart
+    @Environment(AppState.self) private var appState
     @State private var path = NavigationPath()
+    @State private var showingSettings = false
     @State private var cameraState: CameraState = .checking
     @State private var pendingBarcode: ComicBarcode?
     @State private var textChips: [String] = []
@@ -21,6 +24,31 @@ struct ScanView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(.visible, for: .navigationBar)
                 .comicDestinations()
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if !cart.lines.isEmpty {
+                            Button {
+                                appState.tab = .deal
+                            } label: {
+                                Label("\(cart.kind.rawValue) · \(cart.lines.count) · \(formatCents(cart.headlineCents))",
+                                      systemImage: "cart.fill")
+                                    .labelStyle(.titleAndIcon)
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                    }
+                }
+                .sheet(isPresented: $showingSettings) { SettingsView() }
+                .environment(\.popToRoot, PopToRoot { path = NavigationPath() })
                 .sheet(item: $pendingBarcode) { barcode in
                     BarcodeConfirmSheet(barcode: barcode) { confirmed in
                         pendingBarcode = nil

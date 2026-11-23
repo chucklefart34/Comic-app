@@ -42,6 +42,7 @@ struct LookUpView: View {
             }
             .navigationTitle("Look Up")
             .comicDestinations()
+            .environment(\.popToRoot, PopToRoot { path = NavigationPath() })
         }
     }
 
