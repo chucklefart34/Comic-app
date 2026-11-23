@@ -18,7 +18,7 @@ struct ComicScannerApp: App {
                 .environment(cart)
                 .environment(appState)
         }
-        .modelContainer(for: [CollectionItem.self, Deal.self, Show.self])
+        .modelContainer(for: [CollectionItem.self, Deal.self, Show.self, CoverPrint.self])
     }
 }
 
@@ -122,6 +122,8 @@ enum Prefs {
     static let gradingFeeKey = "gradingFee"
     static let activeShowKey = "activeShow"
     static let returnToScannerKey = "returnToScanner"
+    static let shelfPercentKey = "shelfPercent"
+    static let shelfRoundingKey = "shelfRounding"
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -134,6 +136,8 @@ enum Prefs {
             buysForSaleKey: true,
             gradingFeeKey: 40,
             returnToScannerKey: true,
+            shelfPercentKey: 100,
+            shelfRoundingKey: ShelfRounding.ninetyNine.rawValue,
         ])
     }
 
@@ -152,8 +156,36 @@ enum Prefs {
     static var gradingFeeCents: Int { UserDefaults.standard.integer(forKey: gradingFeeKey) * 100 }
     static var returnToScanner: Bool { UserDefaults.standard.bool(forKey: returnToScannerKey) }
 
+    static var shelfPercent: Int { UserDefaults.standard.integer(forKey: shelfPercentKey) }
+    static var shelfRounding: ShelfRounding {
+        ShelfRounding(rawValue: UserDefaults.standard.string(forKey: shelfRoundingKey) ?? "") ?? .ninetyNine
+    }
+
+    /// The price to put a book out at: market × your markup, rounded the way your store prices.
+    static func shelfPrice(forMarket marketCents: Int?) -> Int? {
+        guard let marketCents, marketCents > 0 else { return nil }
+        let raw = Double(marketCents) * Double(shelfPercent) / 100
+        switch shelfRounding {
+        case .ninetyNine:
+            let dollars = max(1, Int((raw / 100).rounded()))
+            return dollars * 100 - 1
+        case .whole:
+            return max(1, Int((raw / 100).rounded())) * 100
+        case .exact:
+            return Int(raw.rounded())
+        }
+    }
+
     static var activeShowRef: UUID? {
         get { UserDefaults.standard.string(forKey: activeShowKey).flatMap(UUID.init(uuidString:)) }
         set { UserDefaults.standard.set(newValue?.uuidString, forKey: activeShowKey) }
     }
+}
+
+enum ShelfRounding: String, CaseIterable, Identifiable {
+    case ninetyNine = "Ends in .99"
+    case whole = "Whole dollars"
+    case exact = "Exact"
+
+    var id: String { rawValue }
 }

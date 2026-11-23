@@ -137,6 +137,7 @@ final class DealCart {
                 item.pricedAt = line.marketCents == nil ? nil : .now
                 item.costCents = line.priceCents
                 item.status = Prefs.buysGoForSale ? .forSale : .collection
+                if Prefs.buysGoForSale { item.askingCents = Prefs.shelfPrice(forMarket: line.marketCents) }
                 context.insert(item)
                 line.itemRef = item.stableRef
             case .outgoing:

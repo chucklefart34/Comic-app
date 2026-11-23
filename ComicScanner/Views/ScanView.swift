@@ -8,6 +8,11 @@ struct ScanView: View {
     @Environment(AppState.self) private var appState
     @State private var path = NavigationPath()
     @State private var showingSettings = false
+    @Environment(\.modelContext) private var modelContext
+    @State private var scannerController = ScannerController()
+    @State private var coverResult: CoverMatchResult?
+    @State private var matchingCover = false
+    @State private var matchError: String?
     @State private var cameraState: CameraState = .checking
     @State private var pendingBarcode: ComicBarcode?
     @State private var textChips: [String] = []
@@ -67,12 +72,39 @@ struct ScanView: View {
         case .ready:
             ZStack(alignment: .bottom) {
                 DataScannerRepresentable(
-                    isActive: path.isEmpty && pendingBarcode == nil,
+                    controller: scannerController,
+                    isActive: path.isEmpty && pendingBarcode == nil && coverResult == nil && !matchingCover,
                     onText: handleText,
                     onCode: handleCode
                 )
                 .ignoresSafeArea(edges: .horizontal)
-                overlay
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        matchCoverButton
+                    }
+                    .padding(.horizontal)
+                    overlay
+                }
+            }
+            .alert("Cover match", isPresented: Binding(get: { matchError != nil }, set: { if !$0 { matchError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(matchError ?? "")
+            }
+            .sheet(item: $coverResult) { result in
+                CoverMatchSheet(result: result) { match in
+                    coverResult = nil
+                    let spec = match.print.spec
+                    path.append(Route.comps(spec))
+                    // Learn this real-world photo too, so the next match is even better.
+                    Task {
+                        await CoverRecognizer.learn(spec: spec, image: result.cover, imageURL: nil, source: "Your photo", context: modelContext)
+                    }
+                } onBarcodeInstead: {
+                    coverResult = nil
+                }
             }
         case .denied:
             ContentUnavailableView {
@@ -93,6 +125,51 @@ struct ScanView: View {
                 systemImage: "camera.metering.unknown",
                 description: Text("Live scanning needs an iPhone with an A12 chip or newer (it won't run in the Simulator). Use the Search tab instead.")
             )
+        }
+    }
+
+    private var matchCoverButton: some View {
+        Button {
+            Task { await matchCover() }
+        } label: {
+            VStack(spacing: 4) {
+                if matchingCover {
+                    ProgressView().tint(.white)
+                } else {
+                    Image(systemName: "photo.badge.magnifyingglass")
+                        .font(.title2)
+                }
+                Text("Match cover").font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(width: 84, height: 72)
+            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16))
+            .shadow(radius: 4)
+        }
+        .disabled(matchingCover)
+        .padding(.bottom, 8)
+        .accessibilityHint("Takes a photo of the cover and finds it among covers the app has learned")
+    }
+
+    private func matchCover() async {
+        guard let scanner = scannerController.scanner else { return }
+        guard CoverRecognizer.learnedCount(context: modelContext) > 0 else {
+            matchError = "No covers learned yet. Scan a few barcodes and tap the matching cover — the app remembers every cover you confirm, and then this button can find them from the picture alone."
+            return
+        }
+        matchingCover = true
+        defer { matchingCover = false }
+        do {
+            let photo = try await scanner.capturePhoto()
+            let result = try await CoverRecognizer.matches(for: photo, context: modelContext)
+            if result.matches.isEmpty {
+                matchError = "No learned cover looks like this one yet. Scan its barcode and tap the cover, and it'll be recognised next time."
+            } else {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                coverResult = CoverMatchResult(matches: result.matches, cover: result.cover)
+            }
+        } catch {
+            if !error.isCancellation { matchError = error.localizedDescription }
         }
     }
 
@@ -277,7 +354,13 @@ struct BarcodeConfirmSheet: View {
 
 // MARK: - VisionKit live scanner
 
+/// Gives the Scan screen a handle on the live camera, for taking a photo of the cover.
+final class ScannerController {
+    weak var scanner: DataScannerViewController?
+}
+
 struct DataScannerRepresentable: UIViewControllerRepresentable {
+    let controller: ScannerController
     var isActive: Bool
     var onText: ([String]) -> Void
     /// Payload, and whether it came from a retail (UPC/EAN) barcode rather than a QR/label code.
@@ -297,6 +380,7 @@ struct DataScannerRepresentable: UIViewControllerRepresentable {
             isHighlightingEnabled: true
         )
         scanner.delegate = context.coordinator
+        controller.scanner = scanner
         return scanner
     }
 

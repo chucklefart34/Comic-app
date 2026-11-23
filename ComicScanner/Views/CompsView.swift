@@ -109,6 +109,7 @@ struct CompsView: View {
     @State private var model = CompsModel()
     @State private var saved = false
     @State private var addedToDeal = false
+    @State private var pricedOut = false
     @State private var gradingChecked = false
     @State private var showExcluded = false
 
@@ -183,6 +184,12 @@ struct CompsView: View {
             if model.status == .idle { await model.load(spec: spec, bot: bot) }
         }
         .refreshable { await model.load(spec: spec, bot: bot) }
+        .task {
+            // Remember this cover so the scanner can recognise it from a photo next time.
+            if !spec.coverImageURL.isEmpty {
+                await CoverRecognizer.learn(spec: spec, imageURL: spec.coverImageURL, context: modelContext)
+            }
+        }
     }
 
     // MARK: Sections
@@ -209,6 +216,15 @@ struct CompsView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
+                if let shelf = Prefs.shelfPrice(forMarket: stats.averageCents) {
+                    LabeledContent {
+                        Text(formatCents(shelf))
+                            .font(.title3.bold().monospacedDigit())
+                            .foregroundStyle(Color.accentColor)
+                    } label: {
+                        Label("Shelf price", systemImage: "tag.fill")
+                    }
+                }
                 LabeledContent("Middle sale (median)", value: formatCents(stats.medianCents))
                 if stats.count >= 4 {
                     LabeledContent("Most sell for", value: "\(formatCents(stats.lowerQuartileCents)) – \(formatCents(stats.upperQuartileCents))")
@@ -262,6 +278,15 @@ struct CompsView: View {
                     Label(saved ? "Value updated" : "Update market value", systemImage: saved ? "checkmark.circle.fill" : "arrow.clockwise.circle")
                 }
                 .disabled(saved || model.stats == nil)
+                if let shelf = Prefs.shelfPrice(forMarket: model.stats?.averageCents), item.status != .sold, item.askingCents != shelf {
+                    Button {
+                        item.askingCents = shelf
+                        item.status = .forSale
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    } label: {
+                        Label("Put out at shelf price · \(formatCents(shelf))", systemImage: "tag")
+                    }
+                }
             } else {
                 Button {
                     addToDeal()
@@ -271,13 +296,22 @@ struct CompsView: View {
                         .font(.headline)
                 }
                 .disabled(addedToDeal)
+                if let shelf = Prefs.shelfPrice(forMarket: model.stats?.averageCents) {
+                    Button {
+                        putOut(at: shelf)
+                    } label: {
+                        Label(pricedOut ? "Priced and in inventory" : "Price it & put out · \(formatCents(shelf))",
+                              systemImage: pricedOut ? "checkmark.circle.fill" : "tag.fill")
+                    }
+                    .disabled(pricedOut || saved)
+                }
                 Button {
                     save()
                 } label: {
-                    Label(saved ? "Added to inventory" : "Add to my inventory",
+                    Label(saved ? "Added to inventory" : "Add to inventory (keeping)",
                           systemImage: saved ? "checkmark.circle.fill" : "plus.circle")
                 }
-                .disabled(saved)
+                .disabled(saved || pricedOut)
             }
         } footer: {
             if item == nil, !cart.lines.isEmpty {
@@ -290,6 +324,17 @@ struct CompsView: View {
         let verb = cart.kind == .buy ? "Buy" : "Trade in"
         let offer = cart.offer(for: model.stats?.averageCents)
         return model.stats == nil ? "\(verb) — set price in deal" : "\(verb) · offer \(formatCents(offer))"
+    }
+
+    /// Adds the book to inventory as For sale at the shelf price (e.g. new stock you're pricing to put out).
+    private func putOut(at shelfCents: Int) {
+        let newItem = CollectionItem(spec: spec, stats: model.stats, imageURL: coverForSaving)
+        newItem.status = .forSale
+        newItem.askingCents = shelfCents
+        modelContext.insert(newItem)
+        pricedOut = true
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        if Prefs.returnToScanner { popToRoot() }
     }
 
     private func addToDeal() {

@@ -11,12 +11,25 @@ struct SettingsView: View {
     @AppStorage(Prefs.buysForSaleKey) private var buysForSale = true
     @AppStorage(Prefs.gradingFeeKey) private var gradingFee = 40
     @AppStorage(Prefs.returnToScannerKey) private var returnToScanner = true
+    @AppStorage(Prefs.shelfPercentKey) private var shelfPercent = 100
+    @AppStorage(Prefs.shelfRoundingKey) private var shelfRounding = ShelfRounding.ninetyNine.rawValue
     @Environment(\.dismiss) private var dismiss
     @State private var cleared = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Stepper("Shelf price: \(shelfPercent)% of market", value: $shelfPercent, in: 50...300, step: 5)
+                    Picker("Rounding", selection: $shelfRounding) {
+                        ForEach(ShelfRounding.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                    }
+                } header: {
+                    Text("Shelf pricing")
+                } footer: {
+                    Text("Every price screen shows a shelf price based on the average sold price. Example: $24.10 market at 100% → $23.99.")
+                }
+
                 Section {
                     Stepper("Buy offers: \(buyPercent)% of market", value: $buyPercent, in: 0...150, step: 5)
                     Stepper("Trade credit: \(tradePercent)% of market", value: $tradePercent, in: 0...150, step: 5)

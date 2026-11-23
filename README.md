@@ -35,6 +35,12 @@ No barcode (older books)? Tap words the camera reads off the cover, or type the 
 **Shows**
 - Start a show (e.g. a comic con), and every deal is counted under it. Add table and travel costs to see profit on books sold and the change in cash in hand.
 
+**Shelf pricing (for putting books out)**
+- Every price screen shows a **shelf price**: the average sold price × your markup (100% by default), rounded to .99 or whole dollars. **Price it & put out** adds the book to inventory as For sale at that price. Books bought in a Buy deal get a shelf price automatically.
+
+**Cover recognition (learns as you go)**
+- Each time you scan a barcode and tap the matching cover, the app saves a visual fingerprint of that cover on the phone. After that, **Match cover** on the scanner takes a photo and shows the closest learned covers. That works for books with no barcode, damaged barcodes, and variants. Tapping a match also learns your photo, so it gets better with use. Nothing is uploaded, and no outside cover database is used.
+
 **Worth grading?**
 - On any raw book's price screen, see CGC 9.0–9.8 sales of the same book and what you'd gain over selling raw, after your grading cost.
 
