@@ -2,7 +2,8 @@ name: Build IPA
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["ComicScanner/**", "ComicScanner.xcodeproj/**", ".github/workflows/build-ipa.yml"]
   workflow_dispatch:
 
 permissions:
@@ -51,9 +52,12 @@ jobs:
           path: ComicScanner.ipa
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Comic Scanner 1.0 (build ${{ github.run_number }})
+          target_commitish: ${{ github.sha }}
+          make_latest: true
           files: ComicScanner.ipa
           body: |
             Unsigned build of Comic Scanner. Install it with Sideloadly or AltStore, which sign it with your own Apple ID.
