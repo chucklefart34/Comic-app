@@ -124,6 +124,14 @@ struct ComicSpec: Codable, Hashable {
         return (words.filter { !$0.isEmpty } + excluded.map { "-\($0)" }).joined(separator: " ")
     }
 
+    /// Wide search (just title + issue) used to fetch sales ahead of time; the matcher narrows it down.
+    var broadQuery: String {
+        var words = [title.trimmed, issue.trimmed].filter { !$0.isEmpty }
+        words += ["-lot", "-lots", "-bundle"]
+        if !mentionsReprint { words += ["-facsimile", "-reprint"] }
+        return words.joined(separator: " ")
+    }
+
     var mentionsReprint: Bool {
         let text = "\(title) \(variant)".lowercased()
         return text.contains("facsimile") || text.contains("reprint") || text.contains("true believers")

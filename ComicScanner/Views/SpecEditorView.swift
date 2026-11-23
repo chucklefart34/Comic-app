@@ -264,6 +264,7 @@ struct SpecEditorView: View {
         switch source {
         case .spec(let initial):
             spec = initial
+            SoldCache.shared.prefetch(for: spec, seed: [], bot: bot)
 
         case .barcode(let barcode):
             spec = barcode.spec
@@ -293,6 +294,8 @@ struct SpecEditorView: View {
                 certFields = result.fields
                 if spec.title.isEmpty {
                     problem = "Couldn't read the title from the cert page. Check the details below."
+                } else {
+                    SoldCache.shared.prefetch(for: spec, seed: [], bot: bot)
                 }
             } catch {
                 if !error.isCancellation { problem = error.localizedDescription }

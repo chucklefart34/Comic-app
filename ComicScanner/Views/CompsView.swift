@@ -18,7 +18,32 @@ final class CompsModel {
     var included: [CompVerdict] { verdicts.filter(\.included) }
     var excluded: [CompVerdict] { verdicts.filter { !$0.included } }
 
+    /// True while a quick result is on screen and the exact search is still running.
+    var refining = false
+    var note: String?
+
     func load(spec: ComicSpec, bot: WebBot) async {
+        note = nil
+
+        // Head start: sales fetched while you were picking the cover.
+        if spec.customQuery.trimmed.isEmpty,
+           let prefetched = SoldCache.shared.results(for: spec),
+           let pool = try? await prefetched.value, !pool.isEmpty {
+            listings = pool
+            recompute(spec: spec)
+            status = .loaded
+            refining = true
+            defer { refining = false }
+            do {
+                let exact = try await EbaySoldSearch.soldListings(for: spec, bot: bot, comicsOnly: Prefs.searchComicsOnly)
+                listings = merge(listings, exact)
+                recompute(spec: spec)
+            } catch {
+                if !error.isCancellation { note = "Showing early results — couldn't finish the full search (\(error.localizedDescription))." }
+            }
+            return
+        }
+
         status = .loading
         do {
             listings = try await EbaySoldSearch.soldListings(for: spec, bot: bot, comicsOnly: Prefs.searchComicsOnly)
@@ -55,10 +80,30 @@ struct CompsView: View {
     var body: some View {
         List {
             Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(spec.displayTitle).font(.headline)
-                    Text(spec.detailLine).font(.subheadline).foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 14) {
+                    if let cover = URL(string: spec.coverImageURL), !spec.coverImageURL.isEmpty {
+                        AsyncImage(url: cover) { phase in
+                            if case .success(let image) = phase {
+                                image.resizable().scaledToFit()
+                            } else {
+                                Color.secondary.opacity(0.15)
+                            }
+                        }
+                        .frame(width: 80, height: 120)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(spec.displayTitle).font(.headline)
+                        Text(spec.detailLine).font(.subheadline).foregroundStyle(.secondary)
+                        NavigationLink(value: Route.spec(spec)) {
+                            Label("Edit details", systemImage: "slider.horizontal.3")
+                                .font(.subheadline)
+                        }
+                        .padding(.top, 4)
+                    }
                 }
+            } footer: {
+                Text("Wrong cover, signed or graded? Tap Edit details.")
             }
 
             switch model.status {
@@ -110,19 +155,28 @@ struct CompsView: View {
         Section {
             if let stats = model.stats {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Typical sale").font(.subheadline).foregroundStyle(.secondary)
-                    Text(formatCents(stats.medianCents))
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                    if stats.count >= 4 {
-                        Text("Most sell for \(formatCents(stats.lowerQuartileCents)) – \(formatCents(stats.upperQuartileCents))")
-                            .font(.subheadline)
+                    HStack(spacing: 6) {
+                        Text("Average sold price").font(.subheadline).foregroundStyle(.secondary)
+                        if model.refining {
+                            ProgressView().controlSize(.mini)
+                            Text("checking more sales…").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
+                    Text(formatCents(stats.averageCents))
+                        .font(.system(size: 44, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(.default, value: stats.averageCents)
+                    Text("from \(stats.count) sale\(stats.count == 1 ? "" : "s")")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
-                LabeledContent("Sales counted", value: "\(stats.count)")
+                LabeledContent("Middle sale (median)", value: formatCents(stats.medianCents))
+                if stats.count >= 4 {
+                    LabeledContent("Most sell for", value: "\(formatCents(stats.lowerQuartileCents)) – \(formatCents(stats.upperQuartileCents))")
+                }
                 LabeledContent("Lowest / highest", value: "\(formatCents(stats.lowCents)) / \(formatCents(stats.highCents))")
-                LabeledContent("Average", value: formatCents(stats.averageCents))
                 if let oldest = stats.oldest, let newest = stats.newest {
                     LabeledContent("Sold between", value: "\(oldest.formatted(.dateTime.month(.abbreviated).day())) – \(newest.formatted(.dateTime.month(.abbreviated).day().year()))")
                 }
@@ -131,6 +185,11 @@ struct CompsView: View {
                         .font(.footnote)
                         .foregroundStyle(.orange)
                 }
+            } else if model.refining {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("No exact matches yet — checking more sales…")
+                }
             } else {
                 Label("No matching sales found in eBay's recent sold listings.", systemImage: "magnifyingglass")
                 Text("Check the \"Left out\" list below, or go back and loosen the details (e.g. remove the variant words).")
@@ -138,7 +197,10 @@ struct CompsView: View {
                     .foregroundStyle(.secondary)
             }
         } footer: {
-            Text(Prefs.compOptions.includeShipping ? "Prices include shipping." : "Prices exclude shipping.")
+            VStack(alignment: .leading, spacing: 4) {
+                if let note = model.note { Text(note).foregroundStyle(.orange) }
+                Text(Prefs.compOptions.includeShipping ? "Prices include shipping." : "Prices exclude shipping.")
+            }
         }
     }
 

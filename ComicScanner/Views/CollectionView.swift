@@ -66,6 +66,7 @@ struct CollectionView: View {
             .navigationDestination(for: CollectionItem.self) { item in
                 CompsView(spec: item.spec, item: item)
             }
+            .comicDestinations()
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if !items.isEmpty {

@@ -33,7 +33,20 @@ enum EbaySoldSearch {
     /// Sold comps for a spec.
     @MainActor
     static func soldListings(for spec: ComicSpec, bot: WebBot, comicsOnly: Bool) async throws -> [SoldListing] {
-        let url = soldURL(query: spec.ebayQuery, comicsOnly: comicsOnly)
+        try await soldListings(query: spec.ebayQuery, bot: bot, comicsOnly: comicsOnly)
+    }
+
+    @MainActor
+    static func soldListings(query: String, bot: WebBot, comicsOnly: Bool) async throws -> [SoldListing] {
+        let url = soldURL(query: query, comicsOnly: comicsOnly)
+        let json = try await bot.fetch(url, site: "eBay", readyScript: readyScript, extractScript: extractScript)
+        return try parse(json)
+    }
+
+    /// Listings (for sale and sold) that mention a barcode. `sold` is true for the sold-search results.
+    @MainActor
+    static func listingsForBarcode(_ code: String, sold: Bool, bot: WebBot) async throws -> [SoldListing] {
+        let url = sold ? soldURL(query: code, comicsOnly: true) : activeURL(query: code)
         let json = try await bot.fetch(url, site: "eBay", readyScript: readyScript, extractScript: extractScript)
         return try parse(json)
     }
@@ -162,6 +175,38 @@ enum EbaySoldSearch {
         formatter.dateFormat = "MMM d, yyyy"
         return formatter
     }()
+
+    /// Issue number written in a listing title ("#300"), if any.
+    static func issueGuess(from listingTitle: String) -> String? {
+        firstMatch(#"#\s?(\d{1,4})\b"#, in: listingTitle)
+    }
+
+    private static let variantWords = ["virgin", "foil", "sketch", "blank", "newsstand", "metal", "glow", "holo", "chrome", "incentive"]
+
+    /// Variant and exclusive wording in a listing title, e.g. ("Cover B", ""), ("Virgin", "Mile High").
+    static func variantGuess(from listingTitle: String, series: String) -> (variant: String, exclusive: String) {
+        let text = TitleTraits.normalize(listingTitle)
+        var parts: [String] = []
+        if let letter = firstMatch(#"\bcover\s+([b-z])\b"#, in: text) { parts.append("Cover \(letter.uppercased())") }
+        if let ratio = firstMatch(#"\b(1:\d{2,4})\b"#, in: text) { parts.append(ratio) }
+        for word in variantWords where matches(#"\b"# + word + #"\b"#, text) {
+            parts.append(word.capitalized)
+        }
+
+        var exclusive = ""
+        if let range = text.range(of: "exclusive") {
+            let seriesWords = Set(series.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+            let skip = Set(variantWords).union(["comics", "comic", "variant", "cover", "edition", "con", "the", "and"]).union(seriesWords)
+            let before = text[..<range.lowerBound]
+                .split(whereSeparator: { !($0.isLetter || $0.isNumber || "&'.:#".contains($0)) })
+                .map(String.init)
+                .filter { word in
+                    !skip.contains(word) && !word.allSatisfy(\.isNumber) && word.count > 1 && !word.contains(":") && !word.hasPrefix("#")
+                }
+            exclusive = before.suffix(3).map(\.capitalized).joined(separator: " ")
+        }
+        return (parts.joined(separator: " "), exclusive)
+    }
 
     /// Best guess at the series title from a listing title, cutting at the issue number.
     static func seriesGuess(from listingTitle: String, issue: String) -> String {

@@ -12,6 +12,12 @@ struct SoldListing: Identifiable, Hashable, Codable {
     /// "Best offer accepted": eBay shows the asking price, the real price was lower.
     let bestOffer: Bool
 
+    /// eBay serves thumbnails like ".../s-l140.webp"; ask for a bigger one.
+    var largeImageURL: URL? {
+        guard let imageURL else { return nil }
+        return URL(string: replacing(#"s-l\d+(\.\w+)"#, in: imageURL.absoluteString, with: "s-l500$1")) ?? imageURL
+    }
+
     func totalCents(includeShipping: Bool) -> Int {
         priceCents + (includeShipping ? (shippingCents ?? 0) : 0)
     }

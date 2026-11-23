@@ -60,7 +60,9 @@ extension View {
     func comicDestinations() -> some View {
         navigationDestination(for: Route.self) { route in
             switch route {
-            case .barcode, .cert, .spec:
+            case .barcode(let barcode):
+                CoverPickerView(barcode: barcode)
+            case .cert, .spec:
                 SpecEditorView(source: route)
             case .comps(let spec):
                 CompsView(spec: spec)
