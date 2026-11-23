@@ -11,12 +11,21 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [macos-14, macos-15]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Xcode version
-        run: xcodebuild -version
+      - name: Pick newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
 
       - name: Build (unsigned)
         run: |
@@ -43,12 +52,12 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-log-${{ matrix.os }}
           path: build.log
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ComicScanner-ipa
+          name: ComicScanner-ipa-${{ matrix.os }}
           path: ComicScanner.ipa
 
       - name: Publish release
