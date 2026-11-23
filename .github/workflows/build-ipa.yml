@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-15]
     steps:
       - uses: actions/checkout@v4
 
@@ -38,8 +38,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)" || true
-          test -d build/Release-iphoneos/ComicScanner.app
+            build > build.log 2>&1 || true
+          grep -E "error:|BUILD (SUCCEEDED|FAILED)" build.log | sort -u || true
+          grep -q "BUILD SUCCEEDED" build.log
+          test -f build/Release-iphoneos/ComicScanner.app/ComicScanner
 
       - name: Package IPA
         run: |
