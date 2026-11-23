@@ -26,6 +26,16 @@ No barcode (older books)? Tap words the camera reads off the cover, or type the 
 **Collection**
 - Save books with their price, update every value with one tap, swipe to delete, and export to CSV.
 
+## Install without a Mac
+
+Every push to `main` builds the app in the cloud and publishes `ComicScanner.ipa` on the [Releases page](https://github.com/chucklefart34/Comic-app/releases/latest). The file is **unsigned**, so iPhones won't install it directly. A sideloading tool signs it with your own Apple ID:
+
+1. On a Windows PC (or Mac), install **Sideloadly** (or **AltStore**) and iTunes/iCloud from Apple's website, not the Microsoft Store.
+2. Download `ComicScanner.ipa` from the latest release.
+3. Plug in your iPhone, open Sideloadly, drag in the .ipa, enter your Apple ID and click Start.
+4. On the iPhone, turn on **Settings → Privacy & Security → Developer Mode** and restart when asked. Then trust your Apple ID under **Settings → General → VPN & Device Management**.
+5. With a free Apple ID the app stops opening after **7 days**. Re-run Sideloadly to refresh it; your collection is kept. A paid Apple Developer account ($99/yr) makes it last a year.
+
 ## Build and run
 
 You need a Mac with **Xcode 16+** and an iPhone XS/XR or newer on **iOS 17+**. The camera scanner doesn't run in the Simulator; Look Up and pricing do.
