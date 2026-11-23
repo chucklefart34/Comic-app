@@ -23,8 +23,20 @@ No barcode (older books)? Tap words the camera reads off the cover, or type the 
 - Best Offer sales are left out by default because eBay hides the real price. You can change this in Settings.
 - If eBay or CGC shows a "verify you're human" check, the page opens so **you** complete it, then the app carries on. The app never tries to get around these checks.
 
-**Collection**
-- Save books with their price, update every value with one tap, swipe to delete, and export to CSV.
+**Deals (vendor point of sale)**
+- **Buy:** scan the customer's books one after another. Each one goes into the deal at your buy % of the average sold price (60% by default), and the app jumps back to the scanner for the next book. You can change any price, or set the whole stack to a %.
+- **Sell:** add books from your inventory at your asking price (or market value). Profit is worked out from what you paid.
+- **Trade:** scan what they bring (credited at your trade %, 75% by default), add what they're taking, and see who owes whom.
+- **Show customer** opens a big, clean offer screen to turn toward them. **Complete** moves books into or out of inventory. **Past deals** lets you void a deal and undo it.
+
+**Inventory**
+- Every book is marked Keeping, For sale or Sold, with market value, what you paid, asking price and box/binder. You can filter, search, group by box, see totals and gain, update all values, and export to CSV.
+
+**Shows**
+- Start a show (e.g. a comic con), and every deal is counted under it. Add table and travel costs to see profit on books sold and the change in cash in hand.
+
+**Worth grading?**
+- On any raw book's price screen, see CGC 9.0–9.8 sales of the same book and what you'd gain over selling raw, after your grading cost.
 
 ## Install without a Mac
 
