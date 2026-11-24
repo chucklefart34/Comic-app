@@ -42,6 +42,13 @@ final class WebBot {
     /// When true, the app shows the web view so you can complete a site's check (or sign in).
     var showingWebView = false
     var webViewMessage = ""
+    /// The page shown in the visible sheet. The sheet has its own browser (sharing cookies),
+    /// so the hidden one never has to move between screens.
+    var visibleURL: URL?
+    /// True while the sheet is showing a security check that the app is waiting on.
+    var visibleIsCheck = false
+    /// Set by the sheet once its page is no longer a security check.
+    var visibleCleared = false
     var status = ""
 
     init() {
@@ -82,7 +89,7 @@ final class WebBot {
         status = "Loading \(site)…"
         webView.customUserAgent = userAgent ?? EbayPages.desktopUserAgent
         try await navigator.load(url, in: webView)
-        try await waitOutSecurityCheck(site: site)
+        try await waitOutSecurityCheck(site: site, url: url)
 
         if let readyScript {
             status = "Reading \(site)…"
@@ -100,15 +107,21 @@ final class WebBot {
 
     /// Opens a page in the visible web view (used for optional eBay sign-in, or to look at a cert page).
     func show(_ url: URL, message: String) {
-        guard !busy else { return }
         webViewMessage = message
-        webView.load(URLRequest(url: url))
+        visibleURL = url
+        visibleIsCheck = false
+        visibleCleared = false
         showingWebView = true
     }
 
+    /// The user agent the visible sheet should use (a passed check is tied to it).
+    var userAgent: String? { webView.customUserAgent }
+
     func cancelCheck() {
-        userCancelled = true
+        if visibleIsCheck { userCancelled = true }
         showingWebView = false
+        // A sign-in (or passed check) also helps the fast direct downloads.
+        Task { await shareCookies() }
     }
 
     func clearCookies() async {
@@ -119,18 +132,26 @@ final class WebBot {
 
     // MARK: - Security checks
 
-    private static let checkScript = """
+    static let checkScript = """
     (() => {
       const text = (document.title || '') + ' ' + (document.body ? document.body.innerText.slice(0, 2000) : '');
-      return /pardon our interruption|verify you are (a )?human|are you a robot|checking your browser|just a moment|security check|captcha|press (and|&) hold|unusual traffic/i.test(text);
+      return /pardon our interruption|security measure|verify (that )?you are (a )?human|verify yourself|are you a robot|checking your browser|just a moment|security check|captcha|press (and|&) hold|unusual traffic/i.test(text);
     })()
     """
+
+    /// Copies the browser's cookies (including a passed security check) to the fast direct downloads.
+    func shareCookies() async {
+        let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+        for cookie in cookies where cookie.domain.contains("ebay") {
+            HTTPCookieStorage.shared.setCookie(cookie)
+        }
+    }
 
     private func onSecurityCheck() async -> Bool {
         (try? await webView.evaluateJavaScript(Self.checkScript)) as? Bool ?? false
     }
 
-    private func waitOutSecurityCheck(site: String) async throws {
+    private func waitOutSecurityCheck(site: String, url: URL) async throws {
         guard await onSecurityCheck() else { return }
 
         // Many checks clear by themselves after a few seconds.
@@ -140,17 +161,32 @@ final class WebBot {
             if !(await onSecurityCheck()) { return }
         }
 
-        // Still there: hand it to you.
+        // Still there: show you the page in the sheet so you can complete it yourself.
         webViewMessage = "\(site) wants to make sure you're a person. Complete the check and the app will carry on."
+        visibleURL = webView.url ?? url
+        visibleIsCheck = true
+        visibleCleared = false
         showingWebView = true
-        defer { showingWebView = false }
-        for _ in 0..<360 {  // up to 3 minutes
+        defer {
+            showingWebView = false
+            visibleIsCheck = false
+        }
+        var waited = 0
+        while !visibleCleared {
             try await Task.sleep(nanoseconds: 500_000_000)
             if userCancelled { throw BotError.cancelled }
+            waited += 1
+            if waited > 360 { throw BotError.gaveUp(site) }  // 3 minutes
+        }
+        // Passed: the cookies are shared, so load the page again here.
+        showingWebView = false
+        try await navigator.load(url, in: webView)
+        for _ in 0..<10 {
             if !(await onSecurityCheck()) {
-                try await Task.sleep(nanoseconds: 1_500_000_000)  // let the real page finish loading
+                await shareCookies()
                 return
             }
+            try await Task.sleep(nanoseconds: 500_000_000)
         }
         throw BotError.gaveUp(site)
     }
@@ -199,19 +235,13 @@ final class NavigationWaiter: NSObject, WKNavigationDelegate {
 
 // MARK: - Hosting the web view in SwiftUI
 
-/// Keeps the bot's web view inside the app's window (hidden), so pages run normally,
-/// and moves it into the visible sheet when you need to see it.
+/// Keeps the bot's web view inside the app's window (hidden), so pages run normally. It never moves.
 final class WebViewHost: UIView {
-    static weak var hidden: WebViewHost?
-
     let webView: WKWebView
-    let isHiddenHost: Bool
 
-    init(webView: WKWebView, hidden: Bool) {
+    init(webView: WKWebView) {
         self.webView = webView
-        self.isHiddenHost = hidden
         super.init(frame: .zero)
-        if hidden { WebViewHost.hidden = self }
         clipsToBounds = true
     }
 
@@ -219,45 +249,90 @@ final class WebViewHost: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil {
-            adopt()
-        } else if !isHiddenHost {
-            WebViewHost.hidden?.adopt()
-        }
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        if webView.superview === self, !isHiddenHost {
-            webView.frame = bounds
-        }
-    }
-
-    func adopt() {
-        guard webView.superview !== self else { return }
+        guard window != nil, webView.superview !== self else { return }
         webView.removeFromSuperview()
         addSubview(webView)
-        webView.frame = isHiddenHost ? CGRect(x: 0, y: 0, width: 390, height: 844) : bounds
-        webView.autoresizingMask = isHiddenHost ? [] : [.flexibleWidth, .flexibleHeight]
+        webView.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
     }
 }
 
 struct WebViewContainer: UIViewRepresentable {
     let webView: WKWebView
-    var hidden = false
+    var hidden = true
 
     func makeUIView(context: Context) -> WebViewHost {
-        WebViewHost(webView: webView, hidden: hidden)
+        WebViewHost(webView: webView)
     }
 
-    func updateUIView(_ host: WebViewHost, context: Context) {
-        if !hidden { host.adopt() }
+    func updateUIView(_ host: WebViewHost, context: Context) {}
+}
+
+/// A separate, visible browser for sign-in and security checks. It uses the same cookie store as the bot,
+/// so a sign-in or a passed check counts for the bot too.
+struct VisibleWebView: UIViewRepresentable {
+    let url: URL
+    let userAgent: String?
+    let onPage: (WKWebView) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPage: onPage) }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.customUserAgent = userAgent
+        view.navigationDelegate = context.coordinator
+        view.uiDelegate = context.coordinator
+        view.allowsBackForwardNavigationGestures = true
+        view.load(URLRequest(url: url))
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        view.stopLoading()
+        view.navigationDelegate = nil
+        view.uiDelegate = nil
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        let onPage: (WKWebView) -> Void
+        init(onPage: @escaping (WKWebView) -> Void) { self.onPage = onPage }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            onPage(webView)
+        }
+
+        // "Sign in with Google/Apple" and similar open popups: show them in the same view.
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if navigationAction.targetFrame == nil { webView.load(navigationAction.request) }
+            return nil
+        }
+
+        // Page alerts must always be answered, or WebKit raises an exception.
+        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+            completionHandler()
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+            completionHandler(true)
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+            completionHandler(defaultText)
+        }
     }
 }
 
 /// The sheet shown when a site needs you (security check, optional sign-in).
 struct BotWebSheet: View {
     @Environment(WebBot.self) private var bot
+    @State private var host = ""
 
     var body: some View {
         NavigationStack {
@@ -269,13 +344,25 @@ struct BotWebSheet: View {
                         .padding()
                         .background(.yellow.opacity(0.2))
                 }
-                WebViewContainer(webView: bot.webView)
+                if let url = bot.visibleURL {
+                    VisibleWebView(url: url, userAgent: bot.userAgent) { view in
+                        host = view.url?.host() ?? ""
+                        guard bot.visibleIsCheck else { return }
+                        view.evaluateJavaScript(WebBot.checkScript) { result, _ in
+                            if (result as? Bool) == false {
+                                Task { @MainActor in bot.visibleCleared = true }
+                            }
+                        }
+                    }
+                } else {
+                    Spacer()
+                }
             }
-            .navigationTitle(bot.webView.url?.host() ?? "Web")
+            .navigationTitle(host.isEmpty ? "eBay" : host)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { bot.cancelCheck() }
+                    Button(bot.visibleIsCheck ? "Cancel" : "Done") { bot.cancelCheck() }
                 }
             }
         }

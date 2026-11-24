@@ -92,8 +92,11 @@ enum EbayPages {
         }
 
         var lastError: Error?
+        var hitCheck = false
         for strategy in order {
             try Task.checkCancellation()
+            // Once eBay asks for a check, go straight to the in-app browser, where you can complete it.
+            if hitCheck && !strategy.isBrowser { continue }
             let target = strategy.simpleURL ? simplified(url) : url
             do {
                 let page = try await load(target, strategy: strategy, bot: bot)
@@ -108,13 +111,16 @@ enum EbayPages {
                     diagnostics.listingsRead = parsed.count
                     diagnostics.url = target
                     preferred = strategy
+                    if strategy.isBrowser { await bot.shareCookies() }
                     return parsed
                 }
                 diagnostics.pageTitle = title
                 diagnostics.cardsOnPage = page.cards ?? 0
+                if title.lowercased().contains("security") { hitCheck = true }
             } catch {
                 if error.isCancellation { throw error }
                 lastError = error
+                if error.localizedDescription.lowercased().contains("security") { hitCheck = true }
                 diagnostics.attempts.append("\(strategy.rawValue): \(error.localizedDescription)")
             }
         }
@@ -143,8 +149,8 @@ enum EbayPages {
             throw BotError.noData("eBay")
         }
         let head = html.prefix(20_000).lowercased()
-        if head.contains("pardon our interruption") || head.contains("verify you are a human") || head.contains("captcha") {
-            throw ServiceError.badData("eBay security check (HTTP \(status))")
+        if head.contains("pardon our interruption") || head.contains("security measure") || head.contains("verify you are a human") || head.contains("captcha") {
+            throw BotError.noData("eBay (security check)")
         }
         var page = try await PageParser.shared.read(html: html, baseURL: url)
         if status != 200 { page.pageTitle += " (HTTP \(status))" }
