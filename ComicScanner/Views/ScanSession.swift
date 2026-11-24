@@ -2,182 +2,164 @@ import SwiftData
 import SwiftUI
 import UIKit
 
-/// The scan → identify → price flow behind the Scan screen.
+/// One scanned book in the tray at the bottom of the Scan screen. It identifies and prices itself
+/// in the background, so you can keep scanning.
+@MainActor
+@Observable
+final class TrayItem: Identifiable {
+    enum State: Equatable {
+        case identifying
+        case pricing
+        case done
+        case notFound(String)
+    }
+
+    let id = UUID()
+    var state: State = .identifying
+    var status = "Identifying…"
+    var photo: UIImage?
+    var identification: Identification?
+    var record: ComicRecord?
+    var quantity = 1
+    /// The match wasn't certain: shown with a "Check match" flag.
+    var needsCheck = false
+    var priceError: String?
+    /// Scanning a barcode or another photo to help identify this book.
+    var addingPhoto = false
+    fileprivate var task: Task<Void, Never>?
+
+    init(photo: UIImage?) {
+        self.photo = photo
+    }
+
+    var isWorking: Bool { state == .identifying || state == .pricing }
+
+    /// Value of one copy for the chosen condition.
+    var unitCents: Int? { record?.displayValueCents }
+    var totalCents: Int { (unitCents ?? 0) * quantity }
+}
+
+/// The scan → identify → price flow behind the Scan screen. Every scan becomes a tray item right away.
 @MainActor
 @Observable
 final class ScanSession {
-    enum Phase: Equatable {
-        case idle
-        case identifying
-        case confirm
-        case result
-        case message
-    }
+    var items: [TrayItem] = []
+    var selectedID: UUID?
+    /// When set, the next camera event is an extra photo for this item instead of a new book.
+    var collectingFor: UUID?
+    /// A short message shown over the camera ("Added 3 to Collection").
+    var toast: String?
 
-    var phase: Phase = .idle
-    var statusText = ""
-    var message = ""
-    var identification: Identification?
-    var photo: UIImage?
-    /// Extra photos taken on the "Which one is it?" card (barcode, other angles).
-    var evidencePhotos: [UIImage] = []
-    var collectingMore = false
-    var addingEvidence = false
+    private var toastTask: Task<Void, Never>?
 
-    // Current result
-    var record: ComicRecord?
-    var valuation: Valuation?
-    var loadingPrice = false
-    var priceError: String?
-
-    private var work: Task<Void, Never>?
-    private var modelContext: ModelContext?
-
-    var spec: ComicSpec? { record?.spec }
+    var selected: TrayItem? { items.first { $0.id == selectedID } ?? items.first }
+    var totalCents: Int { items.reduce(0) { $0 + $1.totalCents } }
+    var addableCount: Int { items.filter { $0.record != nil }.reduce(0) { $0 + $1.quantity } }
+    var anyWorking: Bool { items.contains { $0.isWorking } }
 
     // MARK: Camera events
 
     func handle(_ event: CameraEvent, context: ModelContext, bot: WebBot) {
-        modelContext = context
-        // On the "Which one is it?" card, the camera only counts when you've asked to add a photo.
-        if phase == .confirm {
-            if collectingMore && !addingEvidence { addEvidence(event, context: context, bot: bot) }
+        if let id = collectingFor, let item = items.first(where: { $0.id == id }) {
+            addPhoto(event, to: item, context: context, bot: bot)
             return
         }
-        if phase == .identifying { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        work?.cancel()
 
+        let item: TrayItem
         switch event {
         case .barcode(let barcode, let frame):
-            start(status: barcode.issueNumber.map { "Barcode found · issue #\($0)" } ?? "Barcode found",
-                  photo: frame.map(CoverRecognizer.cropCover))
-            work = Task {
+            item = TrayItem(photo: frame.map { UIImage(cgImage: CoverRecognizer.cropCover($0)) })
+            item.status = barcode.issueNumber.map { "Barcode · issue #\($0)" } ?? "Barcode found"
+            add(item)
+            item.task = Task {
                 let result = await Identifier.identify(barcode: barcode, frame: frame, context: context, bot: bot)
-                finishIdentifying(result, context: context, bot: bot)
+                await finish(item, with: result, context: context, bot: bot)
             }
         case .cover(let cover, _):
-            start(status: "Identifying cover…", photo: cover)
-            work = Task {
+            item = TrayItem(photo: UIImage(cgImage: cover))
+            add(item)
+            item.task = Task {
                 let result = await Identifier.identify(cover: cover, context: context, bot: bot)
-                finishIdentifying(result, context: context, bot: bot)
+                await finish(item, with: result, context: context, bot: bot)
             }
         case .slab(let cert):
-            start(status: "Reading \(cert.company.rawValue) cert \(cert.number)…", photo: nil)
-            work = Task {
+            item = TrayItem(photo: nil)
+            item.status = "Reading \(cert.company.rawValue) cert \(cert.number)…"
+            add(item)
+            item.task = Task {
                 do {
                     let result = try await CertLookup.lookUp(cert, bot: bot)
                     guard !result.spec.isEmpty else {
-                        show(message: "Couldn't read the cert page. Try scanning the cover instead.")
+                        item.state = .notFound("Couldn't read the cert page. Scan the cover instead.")
                         return
                     }
                     let candidate = Candidate(spec: result.spec, imageURL: result.spec.coverImageURL.nilIfEmpty, source: cert.company.rawValue)
-                    present(candidate, from: nil, context: context, bot: bot, learn: false)
+                    await use(candidate, for: item, learn: false, context: context, bot: bot)
                 } catch {
-                    if !error.isCancellation { show(message: error.localizedDescription) }
+                    if !error.isCancellation { item.state = .notFound(error.localizedDescription) }
                 }
             }
         }
     }
 
-    private func start(status: String, photo: CGImage?) {
-        statusText = status
-        self.photo = photo.map { UIImage(cgImage: $0) }
-        evidencePhotos = self.photo.map { [$0] } ?? []
-        collectingMore = false
-        identification = nil
-        phase = .identifying
-    }
-
-    // MARK: Extra photos
-
-    func startCollectingMore() {
-        collectingMore = true
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-    }
-
-    func stopCollectingMore() {
-        collectingMore = false
-    }
-
-    private func addEvidence(_ event: CameraEvent, context: ModelContext, bot: WebBot) {
-        guard let current = identification else { return }
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        addingEvidence = true
-        work?.cancel()
-        work = Task {
-            let extra: Identification
-            switch event {
-            case .barcode(let barcode, let frame):
-                statusText = barcode.issueNumber.map { "Barcode added · issue #\($0)" } ?? "Barcode added"
-                if let frame { evidencePhotos.append(UIImage(cgImage: CoverRecognizer.cropCover(frame))) }
-                extra = await Identifier.identify(barcode: barcode, frame: nil, context: context, bot: bot)
-            case .cover(let cover, _):
-                statusText = "Photo added"
-                evidencePhotos.append(UIImage(cgImage: cover))
-                extra = await Identifier.identify(cover: cover, context: context, bot: bot)
-            case .slab:
-                addingEvidence = false
-                collectingMore = false
-                handleSlab(event, context: context, bot: bot)
-                return
-            }
-            guard !Task.isCancelled else { return }
-            let combined = await Identifier.combine(current, extra)
-            addingEvidence = false
-            collectingMore = false
-            finishIdentifying(combined, context: context, bot: bot)
+    private func add(_ item: TrayItem) {
+        withAnimation(.snappy) {
+            items.insert(item, at: 0)
+            selectedID = item.id
         }
     }
 
-    private func handleSlab(_ event: CameraEvent, context: ModelContext, bot: WebBot) {
-        phase = .idle
-        handle(event, context: context, bot: bot)
-    }
-
-    private func finishIdentifying(_ result: Identification, context: ModelContext, bot: WebBot) {
-        guard !Task.isCancelled else { return }
-        identification = result
-        if result.confident, let best = result.best {
-            present(best, from: result, context: context, bot: bot, learn: best.source != "Your scans" && best.source != "Your covers")
-        } else if result.candidates.isEmpty {
-            show(message: result.message ?? "Couldn't identify this comic. Try the barcode, or type the title.")
-        } else {
-            phase = .confirm
+    private func finish(_ item: TrayItem, with result: Identification, context: ModelContext, bot: WebBot) async {
+        guard !Task.isCancelled, items.contains(where: { $0.id == item.id }) else { return }
+        item.identification = result
+        guard let best = result.best else {
+            item.state = .notFound(result.message ?? "Couldn't identify this one. Try the barcode, or search by title.")
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
-            // Get prices for the likeliest match ready while you decide.
-            if let best = result.best { SoldCache.shared.prefetch(for: best.spec, seed: [], bot: bot) }
+            return
         }
+        // Not certain: use the closest match for now and flag it, rather than stopping you.
+        item.needsCheck = !result.confident
+        let learn = result.confident && best.source != "Your scans" && best.source != "Your covers"
+        await use(best, for: item, learn: learn, context: context, bot: bot)
     }
 
-    // MARK: Choosing
+    /// Puts a match on the item and prices it.
+    private func use(_ candidate: Candidate, for item: TrayItem, learn: Bool, context: ModelContext, bot: WebBot) async {
+        if learn { Identifier.remember(candidate, from: item.identification, context: context) }
 
-    /// You picked (or confirmed) a match.
-    func choose(_ candidate: Candidate, context: ModelContext, bot: WebBot) {
-        present(candidate, from: identification, context: context, bot: bot, learn: true)
-    }
-
-    func present(_ candidate: Candidate, from identification: Identification?, context: ModelContext, bot: WebBot, learn: Bool) {
-        modelContext = context
-        if learn { Identifier.remember(candidate, from: identification, context: context) }
-
-        let thumbnail = identification?.photo.flatMap(CoverRecognizer.thumbnailJPEG)
+        let thumbnail = item.photo?.cgImage.flatMap(CoverRecognizer.thumbnailJPEG)
+        let previousCondition = item.record?.condition
         let record = ComicRecord(spec: candidate.spec, imageURL: candidate.imageURL ?? candidate.spec.coverImageURL.nilIfEmpty, thumbnail: thumbnail)
         context.insert(record)
-        self.record = record
-        valuation = PricingService.cached(candidate.spec) ?? SalesStore.latestValuation(for: candidate.spec, context: context)
-        if let valuation { record.setValuation(valuation) }
-        priceError = nil
-        phase = .result
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-
-        work?.cancel()
-        work = Task {
-            // Prices first (that's what you're waiting for); extra details load alongside.
-            async let details: Void = fillDetails(record)
-            await price(record, bot: bot)
-            await details
+        if let old = item.record, !old.inCollection { context.delete(old) }
+        item.record = record
+        if let previousCondition { record.condition = previousCondition }
+        if let saved = PricingService.cached(candidate.spec) ?? SalesStore.latestValuation(for: candidate.spec, context: context) {
+            record.setValuation(saved)
         }
+        if !item.needsCheck { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+
+        async let details: Void = fillDetails(record)
+        await price(item, bot: bot, context: context)
+        await details
+    }
+
+    func price(_ item: TrayItem, bot: WebBot, context: ModelContext, force: Bool = false) async {
+        guard let record = item.record else { return }
+        item.state = .pricing
+        item.status = "Finding sold prices…"
+        item.priceError = nil
+        do {
+            let result = try await PricingService.valuation(for: record.spec, bot: bot, context: context, forceRefresh: force)
+            guard item.record === record else { return }
+            record.setValuation(result)
+            if !result.hasAnyPrice { item.priceError = "No sales found" }
+        } catch {
+            guard !error.isCancellation, item.record === record else { return }
+            item.priceError = NetworkMonitor.shared.isOnline ? "Couldn't load prices" : "Offline"
+        }
+        if item.record === record { item.state = .done }
     }
 
     /// Adds credits/key info from VerseDB when the match came from somewhere else.
@@ -196,58 +178,130 @@ final class ScanSession {
         record.update(spec: spec)
     }
 
-    func price(_ record: ComicRecord, bot: WebBot, force: Bool = false) async {
-        loadingPrice = true
-        defer { loadingPrice = false }
-        do {
-            let result = try await PricingService.valuation(for: record.spec, bot: bot, context: modelContext, forceRefresh: force)
+    // MARK: Fixing a match
+
+    /// You picked the right match from the list (or a search).
+    func choose(_ candidate: Candidate, for item: TrayItem, context: ModelContext, bot: WebBot) {
+        item.needsCheck = false
+        item.state = .identifying
+        item.status = "Updating…"
+        item.task?.cancel()
+        item.task = Task { await use(candidate, for: item, learn: true, context: context, bot: bot) }
+    }
+
+    /// A typed search when nothing was scanned (or for a new book).
+    func addSearched(_ candidate: Candidate, context: ModelContext, bot: WebBot) {
+        let item = TrayItem(photo: nil)
+        add(item)
+        item.task = Task { await use(candidate, for: item, learn: false, context: context, bot: bot) }
+    }
+
+    func reprice(_ item: TrayItem, bot: WebBot, context: ModelContext) {
+        item.task?.cancel()
+        item.task = Task { await price(item, bot: bot, context: context, force: true) }
+    }
+
+    // MARK: Extra photos
+
+    func startAddingPhoto(to item: TrayItem) {
+        collectingFor = item.id
+        item.addingPhoto = true
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    func stopAddingPhoto() {
+        items.first { $0.id == collectingFor }?.addingPhoto = false
+        collectingFor = nil
+    }
+
+    private func addPhoto(_ event: CameraEvent, to item: TrayItem, context: ModelContext, bot: WebBot) {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        stopAddingPhoto()
+        guard let current = item.identification else { return }
+        item.task?.cancel()
+        item.state = .identifying
+        item.task = Task {
+            let extra: Identification
+            switch event {
+            case .barcode(let barcode, _):
+                item.status = barcode.issueNumber.map { "Barcode added · issue #\($0)" } ?? "Barcode added"
+                extra = await Identifier.identify(barcode: barcode, frame: nil, context: context, bot: bot)
+            case .cover(let cover, _):
+                item.status = "Photo added"
+                extra = await Identifier.identify(cover: cover, context: context, bot: bot)
+            case .slab(let cert):
+                item.status = "Reading \(cert.company.rawValue) cert…"
+                guard let result = try? await CertLookup.lookUp(cert, bot: bot), !result.spec.isEmpty else {
+                    item.state = item.record == nil ? .notFound("Couldn't read the cert page.") : .done
+                    return
+                }
+                item.needsCheck = false
+                await use(Candidate(spec: result.spec, imageURL: result.spec.coverImageURL.nilIfEmpty, source: cert.company.rawValue),
+                          for: item, learn: false, context: context, bot: bot)
+                return
+            }
             guard !Task.isCancelled else { return }
-            record.setValuation(result)
-            if self.record === record { valuation = result; priceError = nil }
-        } catch {
-            guard !error.isCancellation else { return }
-            if self.record === record {
-                priceError = NetworkMonitor.shared.isOnline ? error.localizedDescription : "Offline — showing saved prices if there are any."
+            let combined = await Identifier.combine(current, extra)
+            await finish(item, with: combined, context: context, bot: bot)
+        }
+    }
+
+    // MARK: Tray actions
+
+    func remove(_ item: TrayItem) {
+        item.task?.cancel()
+        if collectingFor == item.id { collectingFor = nil }
+        withAnimation(.snappy) {
+            let index = items.firstIndex { $0.id == item.id }
+            items.removeAll { $0.id == item.id }
+            if selectedID == item.id, let index {
+                selectedID = items.indices.contains(index) ? items[index].id : items.last?.id
             }
         }
     }
 
-    // MARK: Card actions
-
-    func setCondition(_ condition: Condition) {
-        record?.condition = condition
+    func clear() {
+        items.forEach { $0.task?.cancel() }
+        withAnimation(.snappy) { items.removeAll() }
+        collectingFor = nil
+        selectedID = nil
     }
 
-    func setGrade(_ grade: Double, company: GradingCompany) {
-        guard let record else { return }
-        var spec = record.spec
-        spec.graded = true
-        spec.grade = grade
-        spec.company = company
-        record.condition = .graded
-        record.update(spec: spec)
+    /// Saves every identified book in the tray to your Collection (one entry per copy) and empties the tray.
+    func addAllToCollection(context: ModelContext) {
+        var added = 0
+        for item in items {
+            guard let record = item.record else { continue }
+            record.inCollection = true
+            added += 1
+            for _ in 1..<max(1, item.quantity) {
+                let copy = ComicRecord(spec: record.spec, imageURL: record.imageURL, thumbnail: record.thumbnail)
+                copy.condition = record.condition
+                copy.valuationData = record.valuationData
+                copy.valueCents = record.valueCents
+                copy.confidenceRaw = record.confidenceRaw
+                copy.pricedAt = record.pricedAt
+                copy.inCollection = true
+                context.insert(copy)
+                added += 1
+            }
+        }
+        let leftover = items.filter { $0.record == nil }
+        withAnimation(.snappy) {
+            items = leftover
+            selectedID = leftover.first?.id
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        show(toast: added == 1 ? "Added 1 comic to Collection" : "Added \(added) comics to Collection")
     }
 
-    func toggleSaved() {
-        guard let record else { return }
-        record.inCollection.toggle()
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-    }
-
-    func show(message: String) {
-        self.message = message
-        phase = .message
-    }
-
-    func dismiss() {
-        work?.cancel()
-        phase = .idle
-        identification = nil
-        collectingMore = false
-        addingEvidence = false
-    }
-
-    func show(manualResult candidate: Candidate, context: ModelContext, bot: WebBot) {
-        present(candidate, from: identification, context: context, bot: bot, learn: true)
+    func show(toast text: String) {
+        toastTask?.cancel()
+        withAnimation { toast = text }
+        toastTask = Task {
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation { toast = nil }
+        }
     }
 }

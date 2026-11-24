@@ -9,39 +9,68 @@ struct ScanScreen: View {
     @State private var camera = CameraModel()
     @State private var session = ScanSession()
     @State private var showingSearch = false
-    @State private var showingDetail = false
-    @State private var showingCorrection = false
+    /// The tray item a search is for (nil = add a new book).
+    @State private var searchTarget: TrayItem?
+    @State private var compsItem: TrayItem?
+    @State private var fixItem: TrayItem?
+    @State private var confirmingClear = false
     @AppStorage(Prefs.autoCaptureKey) private var autoCapture = true
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-
-            switch camera.status {
-            case .running, .idle:
-                CameraPreview(session: camera.session)
-                    .ignoresSafeArea()
-                ScanFrameOverlay(inView: camera.coverInView, progress: camera.lockProgress,
-                                 hint: hint, compact: session.phase != .idle)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-            case .denied:
-                permissionView
-            case .unavailable:
-                ContentUnavailableView("Camera unavailable", systemImage: "camera.metering.unknown",
-                                       description: Text("This device's camera can't be used. You can still search by title."))
-            }
-
-            VStack(spacing: 0) {
-                topBar
-                Spacer()
-                if session.phase == .idle || session.phase == .result || (session.phase == .confirm && session.collectingMore) {
-                    shutterRow
-                        .padding(.bottom, session.phase == .idle ? 28 : 8)
+        VStack(spacing: 0) {
+            ZStack {
+                Color.black
+                switch camera.status {
+                case .running, .idle:
+                    CameraPreview(session: camera.session)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                            camera.captureNow()
+                        }
+                    ScanFrameOverlay(inView: camera.coverInView, progress: camera.lockProgress,
+                                     hint: hint, highlight: session.collectingFor != nil)
+                        .allowsHitTesting(false)
+                case .denied:
+                    permissionView
+                case .unavailable:
+                    ContentUnavailableView("Camera unavailable", systemImage: "camera.metering.unknown",
+                                           description: Text("This device's camera can't be used. You can still search by title."))
                 }
-                card
+
+                VStack(spacing: 0) {
+                    topBar
+                    if let toast = session.toast {
+                        Text(toast)
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .background(Theme.good.opacity(0.9), in: Capsule())
+                            .padding(.top, 10)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    Spacer()
+                    controlRow
+                        .padding(.bottom, 12)
+                }
+            }
+            .clipped()
+
+            if !session.items.isEmpty {
+                ScanTray(session: session) { item in
+                    compsItem = item
+                } onFix: { item in
+                    fixItem = item
+                } onSearch: { item in
+                    searchTarget = item
+                    showingSearch = true
+                } onAddAll: {
+                    session.addAllToCollection(context: modelContext)
+                }
+                .transition(.move(edge: .bottom))
             }
         }
+        .background(Color.black.ignoresSafeArea())
+        .animation(.snappy, value: session.items.isEmpty)
         .preferredColorScheme(.dark)
         .task {
             camera.onEvent = { event in
@@ -53,157 +82,137 @@ struct ScanScreen: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await camera.start() } } else { camera.stop() }
         }
-        .onChange(of: showingSearch || showingDetail || showingCorrection || bot.showingWebView) { _, covered in
+        .onChange(of: showingSearch || compsItem != nil || fixItem != nil || bot.showingWebView) { _, covered in
             camera.setPaused(covered)
         }
-        .onChange(of: session.phase == .confirm && !session.collectingMore) { _, waiting in
-            camera.setPaused(waiting)
-        }
-        .onChange(of: session.collectingMore) { _, collecting in
-            if collecting { camera.setPaused(false) }
-        }
-        .sheet(isPresented: $showingSearch) {
+        .sheet(isPresented: $showingSearch, onDismiss: { searchTarget = nil }) {
             ManualSearchView { candidate in
                 showingSearch = false
-                session.show(manualResult: candidate, context: modelContext, bot: bot)
+                if let target = searchTarget, session.items.contains(where: { $0.id == target.id }) {
+                    session.choose(candidate, for: target, context: modelContext, bot: bot)
+                } else {
+                    session.addSearched(candidate, context: modelContext, bot: bot)
+                }
             }
         }
-        .sheet(isPresented: $showingDetail) {
-            if let record = session.record {
+        .sheet(item: $compsItem) { item in
+            if let record = item.record {
                 NavigationStack { ComicDetailView(record: record) }
             }
         }
-        .sheet(isPresented: $showingCorrection) {
-            CorrectionSheet(identification: session.identification, record: session.record) { candidate in
-                showingCorrection = false
-                session.choose(candidate, context: modelContext, bot: bot)
+        .sheet(item: $fixItem) { item in
+            CorrectionSheet(identification: item.identification, record: item.record) { candidate in
+                fixItem = nil
+                session.choose(candidate, for: item, context: modelContext, bot: bot)
             } onSearch: {
-                showingCorrection = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showingSearch = true }
-            } onEdited: { record in
-                showingCorrection = false
-                Task { await session.price(record, bot: bot) }
+                fixItem = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    searchTarget = item
+                    showingSearch = true
+                }
+            } onEdited: { _ in
+                fixItem = nil
+                item.needsCheck = false
+                session.reprice(item, bot: bot, context: modelContext)
             }
+        }
+        .confirmationDialog("Clear all \(session.items.count) scans?", isPresented: $confirmingClear, titleVisibility: .visible) {
+            Button("Clear tray", role: .destructive) { session.clear() }
+        } message: {
+            Text("They stay in your scan history; only the tray is emptied.")
         }
     }
 
     private var hint: String {
+        if session.collectingFor != nil { return "Scan the barcode or another photo of that book" }
         if camera.coverInView && camera.lockProgress > 0 { return "Hold steady…" }
-        if !autoCapture { return "Tap the shutter to scan the cover" }
-        return "Point at a cover or barcode"
+        return autoCapture ? "Hold a cover in the frame, or tap to scan" : "Fill the frame with the cover, then tap to scan"
     }
 
     // MARK: Bars
 
     private var topBar: some View {
         HStack(spacing: 12) {
-            if camera.hasTorch {
-                circleButton(camera.torchOn ? "bolt.fill" : "bolt.slash.fill", active: camera.torchOn) { camera.toggleTorch() }
-                    .accessibilityLabel(camera.torchOn ? "Flash off" : "Flash on")
+            circleButton("xmark", active: false) {
+                if !session.items.isEmpty { confirmingClear = true }
             }
-            Button {
-                autoCapture.toggle()
-                camera.setAutoCapture(autoCapture)
-            } label: {
-                Text(autoCapture ? "AUTO" : "MANUAL")
-                    .font(.caption.weight(.heavy))
-                    .padding(.horizontal, 12)
-                    .frame(height: 40)
-                    .foregroundStyle(autoCapture ? .white : Theme.secondary)
-                    .background(autoCapture ? Theme.accent : Color.black.opacity(0.45), in: Capsule())
-            }
-            .accessibilityLabel(autoCapture ? "Automatic capture on" : "Automatic capture off")
+            .opacity(session.items.isEmpty ? 0.4 : 1)
+            .accessibilityLabel("Clear the tray")
             Spacer()
-            if !NetworkMonitor.shared.isOnline {
-                Label("Offline", systemImage: "wifi.slash")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10).frame(height: 32)
-                    .background(Color.black.opacity(0.55), in: Capsule())
+            HStack(spacing: 8) {
+                Text("Scan").font(.title3.weight(.semibold))
+                if !NetworkMonitor.shared.isOnline {
+                    Image(systemName: "wifi.slash").font(.subheadline).foregroundStyle(Theme.caution)
+                }
             }
-            circleButton("magnifyingglass", active: false) { showingSearch = true }
-                .accessibilityLabel("Type a title")
-            circleButton("arrow.triangle.2.circlepath.camera", active: false) { camera.switchCamera() }
-                .accessibilityLabel("Switch camera")
+            .padding(.horizontal, 20)
+            .frame(height: 48)
+            .background(.ultraThinMaterial.opacity(0.9), in: Capsule())
+            Spacer()
+            circleButton("magnifyingglass", active: false) {
+                searchTarget = nil
+                showingSearch = true
+            }
+            .accessibilityLabel("Search by title")
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
     }
 
+    private var controlRow: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 0) {
+                modeChip("Auto", active: autoCapture) { setAuto(true) }
+                modeChip("Tap", active: !autoCapture) { setAuto(false) }
+            }
+            .padding(4)
+            .background(.ultraThinMaterial.opacity(0.9), in: Capsule())
+
+            HStack(spacing: 4) {
+                if camera.hasTorch {
+                    iconChip(camera.torchOn ? "flashlight.on.fill" : "flashlight.off.fill", active: camera.torchOn) { camera.toggleTorch() }
+                        .accessibilityLabel(camera.torchOn ? "Light off" : "Light on")
+                }
+                iconChip("arrow.triangle.2.circlepath.camera", active: false) { camera.switchCamera() }
+                    .accessibilityLabel("Switch camera")
+            }
+            .padding(4)
+            .background(.ultraThinMaterial.opacity(0.9), in: Capsule())
+        }
+    }
+
+    private func setAuto(_ on: Bool) {
+        autoCapture = on
+        camera.setAutoCapture(on)
+    }
+
+    private func modeChip(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 16)
+                .frame(height: 38)
+                .foregroundStyle(active ? .white : Theme.secondary)
+                .background(active ? Color.white.opacity(0.18) : .clear, in: Capsule())
+        }
+    }
+
+    private func iconChip(_ icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 42, height: 38)
+                .foregroundStyle(active ? Theme.caution : .white)
+        }
+    }
+
     private func circleButton(_ icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 40, height: 40)
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 48, height: 48)
                 .foregroundStyle(active ? Theme.accent : .white)
-                .background(Color.black.opacity(0.45), in: Circle())
-        }
-    }
-
-    private var shutterRow: some View {
-        HStack {
-            Spacer()
-            Button {
-                UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-                if !session.collectingMore { session.dismiss() }
-                camera.captureNow()
-            } label: {
-                ZStack {
-                    Circle().strokeBorder(.white, lineWidth: 4).frame(width: 72, height: 72)
-                    Circle().fill(Theme.accent).frame(width: 58, height: 58)
-                }
-            }
-            .accessibilityLabel("Scan cover now")
-            Spacer()
-        }
-    }
-
-    // MARK: Card
-
-    @ViewBuilder
-    private var card: some View {
-        switch session.phase {
-        case .idle:
-            EmptyView()
-        case .identifying:
-            IdentifyingCard(photo: session.photo, status: session.statusText, botStatus: bot.status) {
-                session.dismiss()
-            }
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        case .confirm:
-            if let identification = session.identification {
-                CandidatesCard(identification: identification, photos: session.evidencePhotos,
-                               collecting: session.collectingMore, adding: session.addingEvidence,
-                               status: session.statusText) {
-                    session.startCollectingMore()
-                } onStopAdding: {
-                    session.stopCollectingMore()
-                } onPick: { candidate in
-                    session.choose(candidate, context: modelContext, bot: bot)
-                } onSearch: {
-                    showingSearch = true
-                } onCancel: {
-                    session.dismiss()
-                    camera.waitForNextComic()
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        case .result:
-            if let record = session.record {
-                ResultCard(record: record, valuation: session.valuation, loading: session.loadingPrice,
-                           error: session.priceError, session: session) {
-                    showingDetail = true
-                } onCorrect: {
-                    showingCorrection = true
-                } onClose: {
-                    session.dismiss()
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        case .message:
-            MessageCard(text: session.message, onSearch: { showingSearch = true }) {
-                session.dismiss()
-            }
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+                .background(.ultraThinMaterial.opacity(0.9), in: Circle())
         }
     }
 
@@ -218,7 +227,7 @@ struct ScanScreen: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(Theme.accent)
-            Button("Type a title") { showingSearch = true }
+            Button("Search by title") { showingSearch = true }
         }
     }
 }
@@ -229,45 +238,47 @@ struct ScanFrameOverlay: View {
     let inView: Bool
     let progress: Double
     let hint: String
-    let compact: Bool
+    var highlight = false
 
     var body: some View {
         GeometryReader { geometry in
-            let width = min(geometry.size.width * 0.72, 320)
-            let height = width / 0.66
-            let rect = CGRect(x: (geometry.size.width - width) / 2,
-                              y: max(110, (geometry.size.height - height) / 2 - (compact ? 120 : 40)),
+            let topSpace: CGFloat = 76
+            let bottomSpace: CGFloat = 70
+            let available = max(120, geometry.size.height - topSpace - bottomSpace)
+            let height = min(available, geometry.size.width * 0.84 / 0.66)
+            let width = height * 0.66
+            let rect = CGRect(x: (geometry.size.width - width) / 2, y: topSpace + (available - height) / 2,
                               width: width, height: height)
+            let color = highlight ? Theme.caution : (inView ? Theme.good : Color.white.opacity(0.85))
             ZStack {
-                // Dim everything outside the frame.
                 Path { path in
                     path.addRect(CGRect(origin: .zero, size: geometry.size))
-                    path.addRoundedRect(in: rect, cornerSize: CGSize(width: 18, height: 18))
+                    path.addRoundedRect(in: rect, cornerSize: CGSize(width: 22, height: 22))
                 }
-                .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
+                .fill(Color.black.opacity(0.35), style: FillStyle(eoFill: true))
 
-                FrameCorners()
-                    .stroke(inView ? Theme.accent : .white, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                RoundedRectangle(cornerRadius: 22)
+                    .stroke(color, lineWidth: 4)
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
                     .animation(.easeOut(duration: 0.2), value: inView)
 
                 if progress > 0 {
-                    RoundedRectangle(cornerRadius: 18)
+                    RoundedRectangle(cornerRadius: 22)
                         .trim(from: 0, to: progress)
-                        .stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .stroke(Theme.accent, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
                         .animation(.linear(duration: 0.18), value: progress)
                 }
 
-                if !compact {
-                    Text(hint)
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(Color.black.opacity(0.55), in: Capsule())
-                        .position(x: rect.midX, y: rect.maxY + 30)
-                }
+                Text(hint)
+                    .font(.subheadline.weight(.medium))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.ultraThinMaterial.opacity(0.85), in: Capsule())
+                    .frame(maxWidth: rect.width - 16)
+                    .position(x: rect.midX, y: rect.midY)
             }
         }
     }

@@ -2,15 +2,16 @@
 
 A personal iPhone app for comic collectors: point the camera at a comic, and it identifies the exact edition and shows what it's realistically worth from **actual sold sales**, by condition.
 
-**Scan → identify → price, without going through extra screens.** The camera stays live. When a cover is held steady in the frame it's captured automatically (or tap the shutter), barcodes and CGC/PSA slab QR codes are read the moment they're seen, and a results card slides up from the bottom. Point at the next comic and it does it again.
+**Scan → identify → price, without going through extra screens.** The camera stays live. When a cover is held steady in the frame it's captured automatically (or tap the screen), barcodes and CGC/PSA slab QR codes are read the moment they're seen, and the book drops into a tray under the camera. Move straight to the next one while the first is still pricing.
 
 ## Features
 
 **Scanning**
-- Full-screen camera with a scanning frame, auto-capture when a cover is steady, manual shutter, flash and camera switch.
+- Camera with a scanning frame, Auto (captures when a cover is steady) or Tap mode, light and camera switch.
+- **Scan tray**: every book you scan becomes a card with its cover, price, condition, quantity and Comps. Each one identifies and prices itself in the background, so you never wait between books. Swipe between cards, see the running **Total**, and **Add N** saves them all to your Collection (one entry per copy).
 - Barcodes: the UPC plus the 5-digit add-on (issue number, cover, printing).
 - CGC / PSA slab QR codes: reads the cert page for title, grade, label and signer.
-- If the edition isn't certain, it shows the closest matches with their covers. Tap the right one; nothing is assumed.
+- If the edition isn't certain, the closest match is used and the card is flagged **Check match**: tap it (or the pencil) to pick the right cover, search, or scan the barcode as an extra photo.
 
 **Identification**, best source first:
 1. Barcodes and covers you've confirmed before: instant, and it learns as you go.
