@@ -4,8 +4,21 @@ import XCTest
 
 @MainActor
 final class StorageTests: XCTestCase {
+    /// Kept for the whole test: a ModelContext crashes if its container is freed.
+    private var container: ModelContainer!
+
+    private func makeContext() throws -> ModelContext {
+        container = try TestData.container()
+        return container.mainContext
+    }
+
+    override func tearDown() {
+        container = nil
+        super.tearDown()
+    }
+
     func testSalesImportSkipsDuplicates() throws {
-        let context = try TestData.container().mainContext
+        let context = try makeContext()
         let spec = TestData.asm300
         let first = SalesStore.save(Array(TestData.asm300Market.prefix(5)), for: spec, context: context)
         XCTAssertEqual(first.new, 5)
@@ -15,7 +28,7 @@ final class StorageTests: XCTestCase {
     }
 
     func testReviewsAreSaved() throws {
-        let context = try TestData.container().mainContext
+        let context = try makeContext()
         let listing = TestData.sale("77", "Amazing Spider-Man #300 Virgin", 100)
         SalesStore.setReview(true, listing: listing, spec: TestData.asm300, context: context)
         XCTAssertEqual(SalesStore.reviews(for: TestData.asm300, context: context)["77"], true)
@@ -24,7 +37,7 @@ final class StorageTests: XCTestCase {
     }
 
     func testOneSnapshotPerDay() throws {
-        let context = try TestData.container().mainContext
+        let context = try makeContext()
         var valuation = PricingEngine.valuation(spec: TestData.asm300, listings: TestData.asm300Market, sources: [], options: CompOptions())
         SalesStore.snapshot(valuation, spec: TestData.asm300, context: context)
         valuation.marketCents = 123
@@ -36,14 +49,14 @@ final class StorageTests: XCTestCase {
     }
 
     func testAskingPricesAreKeptApart() throws {
-        let context = try TestData.container().mainContext
+        let context = try makeContext()
         SalesStore.saveAsking([TestData.sale("a1", "Amazing Spider-Man #300 NM", 999)], for: TestData.asm300, context: context)
         XCTAssertEqual(SalesStore.asking(for: TestData.asm300, context: context).count, 1)
         XCTAssertTrue(SalesStore.storedSales(for: TestData.asm300, context: context).isEmpty)
     }
 
     func testCollectionValueAndPerformance() throws {
-        let context = try TestData.container().mainContext
+        let context = try makeContext()
         let valuation = PricingEngine.valuation(spec: TestData.asm300, listings: TestData.asm300Market, sources: [], options: CompOptions())
         let record = ComicRecord(spec: TestData.asm300, imageURL: nil, thumbnail: nil)
         record.inCollection = true
@@ -65,7 +78,7 @@ final class StorageTests: XCTestCase {
     }
 
     func testPricingStatusAndSearch() throws {
-        let context = try TestData.container().mainContext
+        let context = try makeContext()
         let valuation = PricingEngine.valuation(spec: TestData.asm300, listings: TestData.asm300Market, sources: [], options: CompOptions())
         SalesStore.snapshot(valuation, spec: TestData.asm300, context: context)
         SalesStore.save(TestData.asm300Market, for: TestData.asm300, context: context)
