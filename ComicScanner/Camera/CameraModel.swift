@@ -209,7 +209,7 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var lastBarcode: (payload: String, at: Date)?
     private var manualRequested = false
 
-    private static let framesToLock = 5
+    private static let framesToLock = 3
 
     func requireNewComic() {
         queue.async {
@@ -226,7 +226,7 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         let now = Date()
-        guard manualRequested || now.timeIntervalSince(lastAnalysis) >= 0.18 else { return }
+        guard manualRequested || now.timeIntervalSince(lastAnalysis) >= 0.12 else { return }
         lastAnalysis = now
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
@@ -270,7 +270,7 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             } else {
                 missingCount = 0
             }
-            if missingCount >= 4 {
+            if missingCount >= 3 {
                 waitingForNewComic = false
                 capturedRect = nil
             }

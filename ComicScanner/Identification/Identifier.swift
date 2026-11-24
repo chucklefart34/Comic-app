@@ -119,66 +119,100 @@ enum Identifier {
 
     // MARK: Cover photo
 
-    static func identify(cover: CGImage, context: ModelContext, bot: WebBot) async -> Identification {
-        var candidates: [Candidate] = []
-        var message: String?
+    /// How close a learned cover must look to be suggested at all ("Close" or better).
+    static let learnedLimit: Float = 0.5
+    /// Matches at or past this distance are "Looks different" and dropped when anything closer exists.
+    static let differentLimit: Float = 0.7
 
-        // 1. Covers you've confirmed before.
-        let learned = (try? await CoverRecognizer.matches(forCover: cover, context: context)) ?? []
+    static func identify(cover: CGImage, context: ModelContext, bot: WebBot) async -> Identification {
+        // Start the slow lookups straight away, side by side; the first clear answer wins.
+        let verseDBTask: Task<(found: [ComicSpec], clear: Bool, error: String?)?, Never>? = VerseDBClient.shared.map { verseDB in
+            Task {
+                guard let jpeg = jpeg(cover, maxSide: 1024) else { return nil }
+                do {
+                    let result = try await verseDB.lookUp(coverJPEG: jpeg)
+                    return (result.candidates, result.clearMatch, nil)
+                } catch {
+                    return ([], false, error.localizedDescription)
+                }
+            }
+        }
+        let ebayTask = Task { await ebayCandidates(for: cover, bot: bot) }
+        func cancelAll() {
+            verseDBTask?.cancel()
+            ebayTask.cancel()
+        }
+
+        // 1. Covers you've confirmed before — only ones that actually look like this cover.
+        let learned = ((try? await CoverRecognizer.matches(forCover: cover, context: context)) ?? [])
+            .filter { $0.distance < learnedLimit }
         if let best = learned.first, best.distance < 0.35,
            learned.count == 1 || learned[1].distance - best.distance > 0.12 {
+            cancelAll()
             return Identification(candidates: learned.map { Candidate(spec: $0.print.spec, imageURL: $0.print.imageURL, source: "Your covers", distance: $0.distance) },
                                   confident: true, method: "Cover", photo: cover)
         }
-        candidates += learned.filter { $0.distance < 0.8 }
-            .map { Candidate(spec: $0.print.spec, imageURL: $0.print.imageURL, source: "Your covers", distance: $0.distance) }
+        var candidates = learned.map { Candidate(spec: $0.print.spec, imageURL: $0.print.imageURL, source: "Your covers", distance: $0.distance) }
+        var message: String?
 
         // 2. VerseDB cover lookup.
-        if let verseDB = VerseDBClient.shared, let jpeg = jpeg(cover, maxSide: 1024) {
-            do {
-                let result = try await verseDB.lookUp(coverJPEG: jpeg)
-                var found = result.candidates
-                if result.clearMatch, var top = found.first {
-                    if let variantID = top.verseDBVariantID { await verseDB.applyVariant(variantID, to: &top) }
-                    if let detailed = try? await verseDB.issue(id: top.verseDBIssueID ?? -1) {
-                        top = merged(top, with: detailed)
-                    }
-                    found[0] = top
-                    return Identification(candidates: found.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "VerseDB") },
-                                          confident: true, method: "Cover", photo: cover)
+        if let verseDBTask, let verseDB = VerseDBClient.shared, let result = await verseDBTask.value {
+            message = result.error
+            var found = result.found
+            if result.clear, var top = found.first {
+                ebayTask.cancel()
+                if let variantID = top.verseDBVariantID { await verseDB.applyVariant(variantID, to: &top) }
+                if let detailed = try? await verseDB.issue(id: top.verseDBIssueID ?? -1) {
+                    top = merged(top, with: detailed)
                 }
-                candidates += found.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "VerseDB") }
-            } catch {
-                message = error.localizedDescription
+                found[0] = top
+                return Identification(candidates: found.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "VerseDB") },
+                                      confident: true, method: "Cover", photo: cover)
             }
+            candidates += found.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "VerseDB") }
         }
 
-        // 3. Read the cover's text, search eBay, rank the listing photos by look.
-        let text = coverText(cover)
-        if !text.query.isEmpty, let listings = try? await EbaySoldSearch.listingsForBarcode(text.query, sold: false, bot: bot) {
-            let issue = text.issue ?? mostCommonIssue(in: listings)
-            let series = mostCommonSeries(in: listings, issue: issue)
-            var fromEbay = listings.compactMap { listing -> Candidate? in
-                guard listing.imageURL != nil else { return nil }
-                var spec = ComicSpec()
-                spec.issue = issue ?? EbaySoldSearch.issueGuess(from: listing.title) ?? ""
-                spec.title = series ?? EbaySoldSearch.seriesGuess(from: listing.title, issue: spec.issue)
-                guard !spec.title.isEmpty else { return nil }
-                let guess = EbaySoldSearch.variantGuess(from: listing.title, series: spec.title)
-                spec.variant = guess.variant
-                spec.exclusive = guess.exclusive
-                spec.coverImageURL = listing.largeImageURL?.absoluteString ?? ""
-                return Candidate(spec: spec, imageURL: spec.coverImageURL.nilIfEmpty, source: "eBay listing")
-            }
-            fromEbay = await rankByLook(Array(fromEbay.prefix(16)), photo: cover)
-            candidates += fromEbay
-        }
+        // 3. eBay listings found from the cover's text, ranked by look.
+        candidates += await ebayTask.value
 
         candidates = dedupe(candidates).sorted { ($0.distance ?? 0.9) < ($1.distance ?? 0.9) }
+        // Don't show things that look nothing like the cover when there's something closer.
+        if candidates.contains(where: { ($0.distance ?? 1) < differentLimit }) {
+            candidates.removeAll { ($0.distance ?? 0) >= differentLimit }
+        }
         if candidates.isEmpty {
             message = message ?? "Couldn't read this cover. Try the barcode, or type the title."
         }
-        return Identification(candidates: Array(candidates.prefix(10)), confident: false, method: "Cover", photo: cover, message: message)
+        // One match that looks very close and clearly beats the rest is treated as certain.
+        let confident: Bool = {
+            guard let first = candidates.first?.distance, first < 0.3 else { return false }
+            guard candidates.count > 1, let second = candidates[1].distance else { return true }
+            return second - first > 0.15
+        }()
+        return Identification(candidates: Array(candidates.prefix(10)), confident: confident, method: "Cover", photo: cover, message: message)
+    }
+
+    /// Reads the cover's text, searches eBay for it and ranks the listing photos by how much they look like the cover.
+    private static func ebayCandidates(for cover: CGImage, bot: WebBot) async -> [Candidate] {
+        let text = coverText(cover)
+        guard !text.query.isEmpty, !Task.isCancelled,
+              let listings = try? await EbaySoldSearch.listingsForBarcode(text.query, sold: false, bot: bot),
+              !Task.isCancelled else { return [] }
+        let issue = text.issue ?? mostCommonIssue(in: listings)
+        let series = mostCommonSeries(in: listings, issue: issue)
+        let fromEbay = listings.compactMap { listing -> Candidate? in
+            guard listing.imageURL != nil else { return nil }
+            var spec = ComicSpec()
+            spec.issue = issue ?? EbaySoldSearch.issueGuess(from: listing.title) ?? ""
+            spec.title = series ?? EbaySoldSearch.seriesGuess(from: listing.title, issue: spec.issue)
+            guard !spec.title.isEmpty else { return nil }
+            let guess = EbaySoldSearch.variantGuess(from: listing.title, series: spec.title)
+            spec.variant = guess.variant
+            spec.exclusive = guess.exclusive
+            spec.coverImageURL = listing.largeImageURL?.absoluteString ?? ""
+            return Candidate(spec: spec, imageURL: spec.coverImageURL.nilIfEmpty, source: "eBay listing")
+        }
+        return await rankByLook(Array(fromEbay.prefix(12)), photo: cover)
     }
 
     // MARK: Combining photos
@@ -286,7 +320,9 @@ enum Identifier {
             for (index, candidate) in candidates.prefix(12).enumerated() {
                 guard let url = candidate.imageURL.flatMap({ URL(string: $0) }) else { continue }
                 group.addTask {
-                    guard let download = try? await URLSession.shared.data(from: url),
+                    var request = URLRequest(url: url)
+                    request.timeoutInterval = 4
+                    guard let download = try? await URLSession.shared.data(for: request),
                           let image = UIImage(data: download.0) else { return (index, nil) }
                     return (index, CoverRecognizer.normalized(image, maxSide: 600))
                 }
