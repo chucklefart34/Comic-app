@@ -8,6 +8,8 @@ import UIKit
 @Observable
 final class TrayItem: Identifiable {
     enum State: Equatable {
+        /// First photo taken; waiting for the barcode (or a second cover photo).
+        case waitingSecond
         case identifying
         case pricing
         case done
@@ -27,6 +29,9 @@ final class TrayItem: Identifiable {
     /// Scanning a barcode or another photo to help identify this book.
     var addingPhoto = false
     fileprivate var task: Task<Void, Never>?
+    /// What the first photo found, worked out while you take the second.
+    fileprivate var firstLook: Task<Identification, Never>?
+    var firstWasBarcode = false
 
     init(photo: UIImage?) {
         self.photo = photo
@@ -47,10 +52,16 @@ final class ScanSession {
     var selectedID: UUID?
     /// When set, the next camera event is an extra photo for this item instead of a new book.
     var collectingFor: UUID?
+    /// The book waiting for its second photo (barcode, or the cover again).
+    var pendingID: UUID?
+    /// Asks the camera not to auto-capture the same thing again until it changes.
+    var onNeedNewComic: (() -> Void)?
     /// A short message shown over the camera ("Added 3 to Collection").
     var toast: String?
 
     private var toastTask: Task<Void, Never>?
+
+    var pending: TrayItem? { items.first { $0.id == pendingID } }
 
     var selected: TrayItem? { items.first { $0.id == selectedID } ?? items.first }
     var totalCents: Int { items.reduce(0) { $0 + $1.totalCents } }
@@ -66,23 +77,26 @@ final class ScanSession {
         }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
+        // Second photo for the book that's waiting: combine both and price it.
+        if let item = pending, !isSlab(event) {
+            secondPhoto(event, for: item, context: context, bot: bot)
+            return
+        }
+
         let item: TrayItem
         switch event {
-        case .barcode(let barcode, let frame):
-            item = TrayItem(photo: frame.map { UIImage(cgImage: CoverRecognizer.cropCover($0)) })
-            item.status = barcode.issueNumber.map { "Barcode · issue #\($0)" } ?? "Barcode found"
+        case .barcode(let barcode, _):
+            item = TrayItem(photo: nil)
+            item.firstWasBarcode = true
+            item.status = barcode.issueNumber.map { "Barcode · issue #\($0)" } ?? "Barcode read"
             add(item)
-            item.task = Task {
-                let result = await Identifier.identify(barcode: barcode, frame: frame, context: context, bot: bot)
-                await finish(item, with: result, context: context, bot: bot)
-            }
+            startWaiting(item) { await Identifier.identify(barcode: barcode, frame: nil, context: context, bot: bot) }
+            onNeedNewComic?()
         case .cover(let cover, _):
             item = TrayItem(photo: UIImage(cgImage: cover))
+            item.status = "Cover captured"
             add(item)
-            item.task = Task {
-                let result = await Identifier.identify(cover: cover, context: context, bot: bot)
-                await finish(item, with: result, context: context, bot: bot)
-            }
+            startWaiting(item) { await Identifier.identify(cover: cover, context: context, bot: bot) }
         case .slab(let cert):
             item = TrayItem(photo: nil)
             item.status = "Reading \(cert.company.rawValue) cert \(cert.number)…"
@@ -100,6 +114,58 @@ final class ScanSession {
                     if !error.isCancellation { item.state = .notFound(error.localizedDescription) }
                 }
             }
+        }
+    }
+
+    private func isSlab(_ event: CameraEvent) -> Bool {
+        if case .slab = event { return true }
+        return false
+    }
+
+    /// Starts identifying from the first photo right away, and waits for the second.
+    private func startWaiting(_ item: TrayItem, identify: @escaping @MainActor () async -> Identification) {
+        item.state = .waitingSecond
+        item.firstLook = Task { await identify() }
+        pendingID = item.id
+    }
+
+    private func secondPhoto(_ event: CameraEvent, for item: TrayItem, context: ModelContext, bot: WebBot) {
+        pendingID = nil
+        item.state = .identifying
+        let first = item.firstLook
+        item.task = Task {
+            let second: Identification
+            switch event {
+            case .barcode(let barcode, _):
+                item.status = barcode.issueNumber.map { "Barcode · issue #\($0)" } ?? "Barcode read"
+                second = await Identifier.identify(barcode: barcode, frame: nil, context: context, bot: bot)
+            case .cover(let cover, _):
+                if item.photo == nil { item.photo = UIImage(cgImage: cover) }
+                item.status = item.firstWasBarcode ? "Cover captured" : "Second cover photo"
+                second = await Identifier.identify(cover: cover, context: context, bot: bot)
+            case .slab:
+                return
+            }
+            guard !Task.isCancelled else { return }
+            item.status = "Matching both photos…"
+            let result: Identification
+            if let firstResult = await first?.value {
+                result = await Identifier.combine(firstResult, second)
+            } else {
+                result = second
+            }
+            await finish(item, with: result, context: context, bot: bot)
+        }
+    }
+
+    /// Use only the first photo (no barcode and you don't want a second shot).
+    func skipSecondPhoto(_ item: TrayItem, context: ModelContext, bot: WebBot) {
+        if pendingID == item.id { pendingID = nil }
+        item.state = .identifying
+        let first = item.firstLook
+        item.task = Task {
+            guard let result = await first?.value else { return }
+            await finish(item, with: result, context: context, bot: bot)
         }
     }
 
@@ -250,7 +316,9 @@ final class ScanSession {
 
     func remove(_ item: TrayItem) {
         item.task?.cancel()
+        item.firstLook?.cancel()
         if collectingFor == item.id { collectingFor = nil }
+        if pendingID == item.id { pendingID = nil }
         withAnimation(.snappy) {
             let index = items.firstIndex { $0.id == item.id }
             items.removeAll { $0.id == item.id }
@@ -261,9 +329,10 @@ final class ScanSession {
     }
 
     func clear() {
-        items.forEach { $0.task?.cancel() }
+        items.forEach { $0.task?.cancel(); $0.firstLook?.cancel() }
         withAnimation(.snappy) { items.removeAll() }
         collectingFor = nil
+        pendingID = nil
         selectedID = nil
     }
 

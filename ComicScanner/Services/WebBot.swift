@@ -59,7 +59,8 @@ final class WebBot {
         site: String,
         readyScript: String? = nil,
         extractScript: String,
-        minimumGap: TimeInterval = 2.5
+        minimumGap: TimeInterval = 2.5,
+        userAgent: String? = nil
     ) async throws -> String {
         while busy {
             try await Task.sleep(nanoseconds: 150_000_000)
@@ -79,6 +80,7 @@ final class WebBot {
         lastLoad = Date()
 
         status = "Loading \(site)…"
+        webView.customUserAgent = userAgent ?? EbayPages.desktopUserAgent
         try await navigator.load(url, in: webView)
         try await waitOutSecurityCheck(site: site)
 

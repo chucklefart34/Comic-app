@@ -29,7 +29,7 @@ struct ScanScreen: View {
                             camera.captureNow()
                         }
                     ScanFrameOverlay(inView: camera.coverInView, progress: camera.lockProgress,
-                                     hint: hint, highlight: session.collectingFor != nil)
+                                     hint: hint, highlight: session.collectingFor != nil || session.pendingID != nil)
                         .allowsHitTesting(false)
                 case .denied:
                     permissionView
@@ -76,6 +76,7 @@ struct ScanScreen: View {
             camera.onEvent = { event in
                 session.handle(event, context: modelContext, bot: bot)
             }
+            session.onNeedNewComic = { camera.waitForNextComic() }
             camera.setAutoCapture(autoCapture)
             await camera.start()
         }
@@ -125,6 +126,10 @@ struct ScanScreen: View {
 
     private var hint: String {
         if session.collectingFor != nil { return "Scan the barcode or another photo of that book" }
+        if let pending = session.pending {
+            return pending.firstWasBarcode ? "Now tap to scan the front cover"
+                                           : "Now scan the barcode — or tap to scan the cover again"
+        }
         if camera.coverInView && camera.lockProgress > 0 { return "Hold steady…" }
         return autoCapture ? "Hold a cover in the frame, or tap to scan" : "Fill the frame with the cover, then tap to scan"
     }

@@ -172,13 +172,23 @@ struct SettingsScreen: View {
         var spec = ComicSpec()
         spec.title = "Amazing Spider-Man"
         spec.issue = "300"
+        // 1. The raw eBay search on its own, so its result isn't hidden by later lookups.
+        let search: String
+        do {
+            let listings = try await EbaySoldSearch.soldListings(for: spec, bot: bot, comicsOnly: Prefs.searchComicsOnly)
+            search = "✓ eBay: \(listings.count) sold listings\n\(EbayPages.last.summary)"
+        } catch {
+            testResult = "✗ eBay search failed\n\(EbayPages.last.summary)"
+            return
+        }
+        // 2. The full pricing on top.
         do {
             let valuation = try await PricingService.valuation(for: spec, bot: bot, context: modelContext, forceRefresh: true)
             let counted = valuation.sales.filter(\.counted).count
             let price = valuation.marketCents.map(formatCents) ?? "N/A"
-            testResult = "✓ \(EbayPages.last.summary)\n\(counted) matching sales · market \(price)"
+            testResult = "\(search)\n\(counted) matching sales · market \(price)"
         } catch {
-            testResult = "✗ \(error.localizedDescription)\n\(EbayPages.last.summary)"
+            testResult = "\(search)\nPricing failed: \(error.localizedDescription)"
         }
     }
 

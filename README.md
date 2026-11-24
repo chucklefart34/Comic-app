@@ -9,7 +9,7 @@ A personal iPhone app for comic collectors: point the camera at a comic, and it 
 **Scanning**
 - Camera with a scanning frame, Auto (captures when a cover is steady) or Tap mode, light and camera switch.
 - **Scan tray**: every book you scan becomes a card with its cover, price, condition, quantity and Comps. Each one identifies and prices itself in the background, so you never wait between books. Swipe between cards, see the running **Total**, and **Add N** saves them all to your Collection (one entry per copy).
-- Barcodes: the UPC plus the 5-digit add-on (issue number, cover, printing).
+- **Two photos per book**: the cover, then the barcode (the UPC plus the 5-digit add-on: issue, cover, printing). No barcode? Scan the cover a second time. Both are combined before pricing, and the first photo is already being looked up while you take the second. Slab QR codes need only one scan.
 - CGC / PSA slab QR codes: reads the cert page for title, grade, label and signer.
 - If the edition isn't certain, the closest match is used and the card is flagged **Check match**: tap it (or the pencil) to pick the right cover, search, or scan the barcode as an extra photo.
 
@@ -58,6 +58,7 @@ A personal iPhone app for comic collectors: point the camera at a comic, and it 
 Tokens are added in Settings and stored in the iPhone Keychain. Nothing is hard-coded, and no backend is needed, since every service is called directly with your own token.
 
 **Limits to know**
+- eBay sometimes answers with an error page depending on how a page is requested, so the app tries a few ways (direct download or in-app browser, iPhone or desktop) and remembers the one that works. Settings → Test eBay pricing shows every attempt.
 - eBay's terms restrict automated access. The app loads one public page at a time at a person's pace, for personal use. If eBay shows a "verify you're human" check, it's shown to you to complete.
 - "AI estimate": there's no AI model in the app (that would need a paid API and a server). Estimates come from the rules above and are always labelled **Estimate · Low confidence**.
 - Condition assessment from photos isn't built yet (marked in the app). It will be an estimate, never a CGC grade.

@@ -126,7 +126,7 @@ enum EbaySoldSearch {
 
     struct RawPage: Decodable {
         let items: [RawCard]
-        let pageTitle: String
+        var pageTitle: String
         var cards: Int?
         var noResults: Bool?
     }

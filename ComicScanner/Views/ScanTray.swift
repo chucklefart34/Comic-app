@@ -89,6 +89,8 @@ struct ScanTray: View {
 
 /// One book in the tray.
 struct TrayCard: View {
+    @Environment(WebBot.self) private var bot
+    @Environment(\.modelContext) private var modelContext
     let item: TrayItem
     let session: ScanSession
     let onComps: () -> Void
@@ -184,6 +186,18 @@ struct TrayCard: View {
     @ViewBuilder
     private var priceArea: some View {
         switch item.state {
+        case .waitingSecond:
+            VStack(alignment: .leading, spacing: 6) {
+                Label(item.firstWasBarcode ? "Now the cover" : "Now the barcode",
+                      systemImage: item.firstWasBarcode ? "book.closed.fill" : "barcode.viewfinder")
+                    .font(.headline)
+                    .foregroundStyle(Theme.caution)
+                Text(item.firstWasBarcode ? "Tap the screen to scan the front cover." : "No barcode? Tap to scan the cover again.")
+                    .font(.caption).foregroundStyle(Theme.secondary).lineLimit(2)
+                smallButton("Use one photo", icon: "forward.fill") {
+                    session.skipSecondPhoto(item, context: modelContext, bot: bot)
+                }
+            }
         case .identifying:
             HStack(spacing: 8) {
                 ProgressView().tint(Theme.accent)
