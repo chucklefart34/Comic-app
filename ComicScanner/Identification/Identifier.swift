@@ -181,6 +181,50 @@ enum Identifier {
         return Identification(candidates: Array(candidates.prefix(10)), confident: false, method: "Cover", photo: cover, message: message)
     }
 
+    // MARK: Combining photos
+
+    /// Merges what a second photo (barcode or another cover shot) found with the first.
+    /// Matches both agree on go to the top; if one edition is clearly supported by both, it's treated as certain.
+    static func combine(_ first: Identification, _ second: Identification) async -> Identification {
+        let photo = second.method == "Cover" ? (second.photo ?? first.photo) : (first.photo ?? second.photo)
+        let barcode = second.barcode ?? first.barcode
+        if second.confident, let best = second.best {
+            return Identification(candidates: [best] + second.candidates.dropFirst(), confident: true,
+                                  method: second.method, photo: photo, barcode: barcode)
+        }
+
+        func sameIssue(_ a: ComicSpec, _ b: ComicSpec) -> Bool {
+            a.searchTitle.lowercased() == b.searchTitle.lowercased() && a.searchIssue == b.searchIssue
+        }
+
+        var pool = first.candidates
+        for candidate in second.candidates where !pool.contains(where: { $0.spec.editionKey == candidate.spec.editionKey }) {
+            pool.append(candidate)
+        }
+        // The barcode says which issue (and whether it's a variant): keep candidates that fit it.
+        if let issue = barcode?.issueNumber {
+            let fitting = pool.filter { Int($0.spec.searchIssue) == issue }
+            if !fitting.isEmpty { pool = fitting }
+        }
+        // Rank by look against the cover photo, if we have one.
+        if let photo { pool = await rankByLook(pool, photo: photo) }
+
+        let agreed = pool.filter { candidate in
+            first.candidates.contains { sameIssue($0.spec, candidate.spec) } && second.candidates.contains { sameIssue($0.spec, candidate.spec) }
+        }
+        let ordered = agreed + pool.filter { candidate in !agreed.contains { $0.id == candidate.id } }
+
+        // Both photos point at the same issue and only one cover of it looks right → certain.
+        let lookAlikes = agreed.filter { ($0.distance ?? 1) < 0.45 }
+        let confident = lookAlikes.count == 1 || (agreed.count == 1 && (agreed[0].distance ?? 0.5) < 0.6)
+        let top = confident ? (lookAlikes.first ?? agreed[0]) : nil
+        let candidates = top.map { top in [top] + ordered.filter { $0.id != top.id } } ?? ordered
+
+        return Identification(candidates: Array(candidates.prefix(12)), confident: confident,
+                              method: "Cover + barcode", photo: photo, barcode: barcode,
+                              message: candidates.isEmpty ? (second.message ?? first.message) : nil)
+    }
+
     // MARK: Typed search
 
     static func search(_ text: String, bot: WebBot) async -> [Candidate] {

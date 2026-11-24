@@ -57,10 +57,15 @@ struct IdentifyingCard: View {
     }
 }
 
-/// "Is it one of these?" — shown when the edition isn't certain.
+/// "Which one is it?" — shown when the edition isn't certain.
 struct CandidatesCard: View {
     let identification: Identification
-    let photo: UIImage?
+    let photos: [UIImage]
+    let collecting: Bool
+    let adding: Bool
+    let status: String
+    let onAddPhoto: () -> Void
+    let onStopAdding: () -> Void
     let onPick: (Candidate) -> Void
     let onSearch: () -> Void
     let onCancel: () -> Void
@@ -71,7 +76,7 @@ struct CandidatesCard: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Which one is it?").font(.title3.weight(.bold))
-                        Text("Not sure of the exact edition — tap the matching cover.")
+                        Text("Tap the matching cover — or add a photo of the barcode for a sharper match.")
                             .font(.caption)
                             .foregroundStyle(Theme.secondary)
                     }
@@ -81,23 +86,18 @@ struct CandidatesCard: View {
                     }
                 }
 
+                addPhotoRow
+
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 12) {
-                        if let photo {
-                            VStack(spacing: 4) {
-                                Image(uiImage: photo).resizable().scaledToFill()
-                                    .frame(width: 92, height: 138)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.accent, lineWidth: 2))
-                                Text("Your scan").font(.caption2.weight(.bold)).foregroundStyle(Theme.accent)
-                            }
-                        }
                         ForEach(identification.candidates) { candidate in
                             Button { onPick(candidate) } label: { CandidateTile(candidate: candidate) }
                                 .buttonStyle(.plain)
                         }
                     }
                 }
+                .opacity(adding ? 0.4 : 1)
+                .disabled(adding)
 
                 Button(action: onSearch) {
                     Label("Not here — type the title", systemImage: "magnifyingglass")
@@ -105,6 +105,48 @@ struct CandidatesCard: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
                         .background(Theme.cardRaised, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// Your photos so far, plus the button to add another (barcode, back cover, another angle).
+    private var addPhotoRow: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(photos.enumerated()), id: \.offset) { _, photo in
+                Image(uiImage: photo).resizable().scaledToFill()
+                    .frame(width: 40, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.accent, lineWidth: 1.5))
+            }
+            if adding {
+                HStack(spacing: 8) {
+                    ProgressView().tint(Theme.accent)
+                    Text(status).font(.caption.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(Theme.cardRaised, in: RoundedRectangle(cornerRadius: 12))
+            } else if collecting {
+                HStack(spacing: 8) {
+                    Image(systemName: "barcode.viewfinder").foregroundStyle(Theme.accent)
+                    Text("Point at the barcode, or tap the shutter for another photo")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button("Done", action: onStopAdding).font(.caption.weight(.bold))
+                }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(Theme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.accent, lineWidth: 1))
+            } else {
+                Button(action: onAddPhoto) {
+                    Label("Add photo (barcode or cover)", systemImage: "camera.badge.plus")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .foregroundStyle(.white)
+                        .background(Theme.accent, in: RoundedRectangle(cornerRadius: 12))
                 }
                 .buttonStyle(.plain)
             }

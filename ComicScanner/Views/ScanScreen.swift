@@ -35,9 +35,9 @@ struct ScanScreen: View {
             VStack(spacing: 0) {
                 topBar
                 Spacer()
-                if session.phase == .idle || session.phase == .result {
+                if session.phase == .idle || session.phase == .result || (session.phase == .confirm && session.collectingMore) {
                     shutterRow
-                        .padding(.bottom, session.phase == .result ? 8 : 28)
+                        .padding(.bottom, session.phase == .idle ? 28 : 8)
                 }
                 card
             }
@@ -56,8 +56,11 @@ struct ScanScreen: View {
         .onChange(of: showingSearch || showingDetail || showingCorrection || bot.showingWebView) { _, covered in
             camera.setPaused(covered)
         }
-        .onChange(of: session.phase) { _, phase in
-            camera.setPaused(phase == .confirm)
+        .onChange(of: session.phase == .confirm && !session.collectingMore) { _, waiting in
+            camera.setPaused(waiting)
+        }
+        .onChange(of: session.collectingMore) { _, collecting in
+            if collecting { camera.setPaused(false) }
         }
         .sheet(isPresented: $showingSearch) {
             ManualSearchView { candidate in
@@ -141,7 +144,7 @@ struct ScanScreen: View {
             Spacer()
             Button {
                 UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-                session.dismiss()
+                if !session.collectingMore { session.dismiss() }
                 camera.captureNow()
             } label: {
                 ZStack {
@@ -168,7 +171,13 @@ struct ScanScreen: View {
             .transition(.move(edge: .bottom).combined(with: .opacity))
         case .confirm:
             if let identification = session.identification {
-                CandidatesCard(identification: identification, photo: session.photo) { candidate in
+                CandidatesCard(identification: identification, photos: session.evidencePhotos,
+                               collecting: session.collectingMore, adding: session.addingEvidence,
+                               status: session.statusText) {
+                    session.startCollectingMore()
+                } onStopAdding: {
+                    session.stopCollectingMore()
+                } onPick: { candidate in
                     session.choose(candidate, context: modelContext, bot: bot)
                 } onSearch: {
                     showingSearch = true

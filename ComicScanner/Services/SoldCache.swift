@@ -20,7 +20,9 @@ final class SoldCache {
         let query = spec.broadQuery
         let task = Task<[SoldListing], Error> {
             let found = try await EbaySoldSearch.soldListings(query: query, bot: bot, comicsOnly: Prefs.searchComicsOnly)
-            return merge(seed, found)
+            let all = merge(seed, found)
+            if all.isEmpty { throw BotError.noData("eBay") }  // don't keep an empty result
+            return all
         }
         entries[key] = (Date(), task)
     }

@@ -133,10 +133,28 @@ struct ComicSpec: Codable, Hashable {
 
     // MARK: eBay search
 
+    /// The title as sellers write it: no "(2018)", "Vol. 2", leading "The", or punctuation eBay treats as operators.
+    var searchTitle: String {
+        var text = title
+        text = replacing(#"\([^)]*\)|\[[^\]]*\]"#, in: text, with: " ")
+        text = replacing(#"\b(vol\.?|volume)\s*\d+\b"#, in: text, with: " ")
+        text = replacing(#"^\s*the\s+"#, in: text, with: "")
+        text = replacing(#"[,:;!?\"“”*]|\s-\s|\s–\s"#, in: text, with: " ")
+        text = replacing(#"\s+"#, in: text, with: " ")
+        return text.trimmed
+    }
+
+    /// Issue number without "#" or leading zeros ("001" → "1").
+    var searchIssue: String {
+        let cleaned = issue.trimmingCharacters(in: CharacterSet(charactersIn: "# "))
+        if let number = Int(cleaned) { return String(number) }
+        return cleaned
+    }
+
     /// Wide search (title + issue + cover words). The matcher then sorts out grades, slabs and variants.
     var broadQuery: String {
         if !customQuery.trimmed.isEmpty { return customQuery.trimmed }
-        var words = [title.trimmed, issue.trimmed].filter { !$0.isEmpty }
+        var words = [searchTitle, searchIssue].filter { !$0.isEmpty }
         words += ["-lot", "-lots", "-bundle"]
         if !mentionsReprint { words += ["-facsimile", "-reprint"] }
         return words.joined(separator: " ")
@@ -145,14 +163,15 @@ struct ComicSpec: Codable, Hashable {
     /// Narrow search for this exact cover (only used when there's a variant or exclusive).
     var variantQuery: String? {
         guard customQuery.trimmed.isEmpty, !(variant.trimmed.isEmpty && exclusive.trimmed.isEmpty) else { return nil }
-        var words = [title.trimmed, issue.trimmed, variant.trimmed, exclusive.trimmed].filter { !$0.isEmpty }
+        let coverWords = replacing(#"[(),:;\"]"#, in: "\(variant) \(exclusive)", with: " ").trimmed
+        var words = [searchTitle, searchIssue, coverWords].filter { !$0.isEmpty }
         words += ["-lot", "-lots", "-bundle"]
         return words.joined(separator: " ")
     }
 
     /// Searches other issues of the series, used for estimates when this issue has no sales.
     var seriesQuery: String {
-        [title.trimmed, "-lot", "-lots", "-bundle", "-set", "-run", "-facsimile", "-reprint"].joined(separator: " ")
+        [searchTitle, "-lot", "-lots", "-bundle", "-set", "-run", "-facsimile", "-reprint"].joined(separator: " ")
     }
 
     var mentionsReprint: Bool {

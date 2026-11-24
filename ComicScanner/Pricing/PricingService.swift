@@ -110,6 +110,17 @@ enum PricingService {
 
     static func clearCache() { cache.removeAll() }
 
+    private static func narrowListings(for spec: ComicSpec, bot: WebBot) async -> [SoldListing] {
+        guard let variantQuery = spec.variantQuery else { return [] }
+        return (try? await EbaySoldSearch.soldListings(query: variantQuery, bot: bot, comicsOnly: Prefs.searchComicsOnly)) ?? []
+    }
+
+    private static func guideData(for spec: ComicSpec) async -> GuideData? {
+        let priceCharting = PriceChartingProvider()
+        guard priceCharting.status == .active else { return nil }
+        return try? await priceCharting.guide(for: spec)
+    }
+
     static func valuation(for spec: ComicSpec, bot: WebBot, forceRefresh: Bool = false) async throws -> Valuation {
         let key = cacheKey(spec)
         if !forceRefresh, let hit = cache[key], Date().timeIntervalSince(hit.updatedAt) < freshFor { return hit }
@@ -121,27 +132,33 @@ enum PricingService {
         let options = Prefs.compOptions
         var sources: [SourceNote] = []
 
-        // eBay: a wide search for this issue (prefetched while you confirmed the cover, if possible)…
+        // eBay: a wide search for this issue (prefetched while you confirmed the cover, if possible),
+        // plus a narrow one for variants (which get buried in popular issues), at the same time.
+        async let narrowSearch = narrowListings(for: spec, bot: bot)
+        async let guideLookup = guideData(for: spec)
+
         var listings: [SoldListing] = []
+        var wideError: Error?
         if let prefetched = SoldCache.shared.results(for: spec), let pool = try? await prefetched.value {
             listings = pool
         } else {
-            listings = try await EbaySoldSearch.soldListings(query: spec.broadQuery, bot: bot, comicsOnly: Prefs.searchComicsOnly)
+            do {
+                listings = try await EbaySoldSearch.soldListings(query: spec.broadQuery, bot: bot, comicsOnly: Prefs.searchComicsOnly)
+            } catch {
+                wideError = error
+            }
         }
-        // …plus a narrow one for variants, which get buried in popular issues.
-        if let variantQuery = spec.variantQuery,
-           let narrow = try? await EbaySoldSearch.soldListings(query: variantQuery, bot: bot, comicsOnly: Prefs.searchComicsOnly) {
-            listings = merge(listings, narrow)
-        }
-
-        // Price guide, if a token is set.
-        var guide: GuideData?
-        let priceCharting = PriceChartingProvider()
-        if priceCharting.status == .active {
-            guide = try? await priceCharting.guide(for: spec)
-        }
+        listings = merge(listings, await narrowSearch)
+        let guide = await guideLookup
+        if listings.isEmpty, guide == nil, let wideError { throw wideError }
 
         var result = PricingEngine.valuation(spec: spec, listings: listings, guide: guide, sources: [], options: options)
+
+        // Nothing mentions this exact cover → use every cover of the issue, labelled as an estimate.
+        if !result.hasAnyPrice, !listings.isEmpty, !(spec.variant.isEmpty && spec.exclusive.isEmpty) {
+            let relaxed = PricingEngine.valuation(spec: spec, listings: listings, guide: guide, sources: [], options: options, ignoreCover: true)
+            if relaxed.hasAnyPrice { result = relaxed }
+        }
 
         // No sales of this issue at all → look at the rest of the series for an estimate.
         if !result.hasAnyPrice, !spec.title.trimmed.isEmpty,
@@ -151,7 +168,9 @@ enum PricingService {
 
         let counted = result.sales.filter(\.counted).count
         sources.append(SourceNote(name: "eBay sold listings",
-                                  detail: "\(counted) matching sales of \(listings.count) checked · completed sales only",
+                                  detail: listings.isEmpty
+                                      ? "No sold listings found for \"\(spec.broadQuery)\""
+                                      : "\(counted) matching sales of \(listings.count) checked · completed sales only",
                                   used: counted > 0))
         if let guide {
             sources.append(SourceNote(name: guide.source, detail: "Price guide values (supporting)", used: true))

@@ -49,6 +49,7 @@ final class WebBot {
         configuration.websiteDataStore = .default()
         webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), configuration: configuration)
         webView.navigationDelegate = navigator
+        webView.customUserAgent = EbayPages.desktopUserAgent
         webView.allowsBackForwardNavigationGestures = true
     }
 

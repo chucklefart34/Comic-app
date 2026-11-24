@@ -90,11 +90,12 @@ enum PricingEngine {
         seriesListings: [SoldListing] = [],
         guide: GuideData? = nil,
         sources: [SourceNote],
-        options: CompOptions
+        options: CompOptions,
+        ignoreCover: Bool = false
     ) -> Valuation {
         var result = Valuation()
         result.sources = sources
-        var sales = SaleClassifier.classify(listings, spec: spec, options: options)
+        var sales = SaleClassifier.classify(listings, spec: spec, options: options, ignoreCover: ignoreCover)
 
         // Outliers among raw sales of this edition.
         markOutliers(&sales, options: options) { if case .raw = $0.kind { return true } else { return false } }
@@ -153,6 +154,20 @@ enum PricingEngine {
         fillMissingBands(&bands, result: &result, spec: spec, seriesListings: seriesListings, options: options)
         result.bands = bands
         result.confidence = confidence(for: result, raw: raw)
+
+        if ignoreCover, result.hasAnyPrice {
+            // These sales may be of other covers, so everything is an estimate.
+            for band in PriceBand.allCases {
+                if var value = result.bands[band], value.cents != nil {
+                    value.basis = .estimate
+                    value.note = "From sales of any cover of this issue"
+                    result.bands[band] = value
+                }
+            }
+            if result.marketCents != nil { result.marketBasis = .estimate }
+            if result.confidence == .high { result.confidence = .medium }
+            result.estimateNote = "No sales mention this exact cover, so this is based on sales of every cover of the issue. Variants can sell for much more or less."
+        }
         result.updatedAt = Date()
         return result
     }

@@ -13,6 +13,8 @@ struct SettingsScreen: View {
     @State private var priceChartingToken = Tokens.priceCharting ?? ""
     @State private var learnedCovers = 0
     @State private var cleared = ""
+    @State private var testing = false
+    @State private var testResult = ""
 
     var body: some View {
         NavigationStack {
@@ -66,6 +68,29 @@ struct SettingsScreen: View {
                 }
 
                 Section {
+                    Button {
+                        Task { await testPricing() }
+                    } label: {
+                        HStack {
+                            Label(testing ? "Checking eBay…" : "Test eBay pricing", systemImage: "stethoscope")
+                            if testing { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(testing)
+                    if !testResult.isEmpty {
+                        Text(testResult).font(.caption).foregroundStyle(Theme.secondary).textSelection(.enabled)
+                    }
+                    if !EbayPages.last.query.isEmpty {
+                        Text("Last search: \"\(EbayPages.last.query)\" — \(EbayPages.last.summary)")
+                            .font(.caption2).foregroundStyle(Theme.tertiary).textSelection(.enabled)
+                    }
+                } header: {
+                    Text("Troubleshooting")
+                } footer: {
+                    Text("Looks up sold copies of Amazing Spider-Man #300 and reports what eBay returned.")
+                }
+
+                Section {
                     LabeledContent("Covers learned", value: "\(learnedCovers)")
                     Button("Clear cached prices") {
                         PricingService.clearCache()
@@ -114,6 +139,22 @@ struct SettingsScreen: View {
             .task { learnedCovers = CoverRecognizer.learnedCount(context: modelContext) }
         }
         .preferredColorScheme(.dark)
+    }
+
+    private func testPricing() async {
+        testing = true
+        defer { testing = false }
+        var spec = ComicSpec()
+        spec.title = "Amazing Spider-Man"
+        spec.issue = "300"
+        do {
+            let valuation = try await PricingService.valuation(for: spec, bot: bot, forceRefresh: true)
+            let counted = valuation.sales.filter(\.counted).count
+            let price = valuation.marketCents.map(formatCents) ?? "N/A"
+            testResult = "✓ \(EbayPages.last.summary)\n\(counted) matching sales · market \(price)"
+        } catch {
+            testResult = "✗ \(error.localizedDescription)\n\(EbayPages.last.summary)"
+        }
     }
 
     private func sourceRow(_ name: String, status: ProviderStatus, detail: String) -> some View {

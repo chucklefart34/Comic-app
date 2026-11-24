@@ -38,69 +38,78 @@ enum EbaySoldSearch {
 
     @MainActor
     static func soldListings(query: String, bot: WebBot, comicsOnly: Bool) async throws -> [SoldListing] {
-        let url = soldURL(query: query, comicsOnly: comicsOnly)
-        let json = try await bot.fetch(url, site: "eBay", readyScript: readyScript, extractScript: extractScript)
-        return try parse(json)
+        try await EbayPages.listings(at: soldURL(query: query, comicsOnly: comicsOnly), query: query, bot: bot)
     }
 
-    /// Listings (for sale and sold) that mention a barcode. `sold` is true for the sold-search results.
+    /// Listings (for sale or sold) for a barcode or search words.
     @MainActor
     static func listingsForBarcode(_ code: String, sold: Bool, bot: WebBot) async throws -> [SoldListing] {
         let url = sold ? soldURL(query: code, comicsOnly: true) : activeURL(query: code)
-        let json = try await bot.fetch(url, site: "eBay", readyScript: readyScript, extractScript: extractScript)
-        return try parse(json)
-    }
-
-    /// Titles of listings (sold or not) that match a barcode — used to guess the title of a scanned comic.
-    @MainActor
-    static func titlesForBarcode(_ barcode: ComicBarcode, bot: WebBot) async throws -> [String] {
-        var codes: [String] = []
-        if let full = barcode.fullUPC { codes.append(full) }
-        codes.append(barcode.base)
-
-        for code in codes {
-            for url in [activeURL(query: code), soldURL(query: code, comicsOnly: true)] {
-                let json = try await bot.fetch(url, site: "eBay", readyScript: readyScript, extractScript: extractScript)
-                let titles = try parsePage(json).items.map(\.title)
-                if !titles.isEmpty { return Array(titles.prefix(8)) }
-            }
-        }
-        return []
+        return try await EbayPages.listings(at: url, query: code, bot: bot)
     }
 
     // MARK: - Page scripts
 
     static let readyScript = """
-    (() => !!document.querySelector('ul.srp-results, .srp-river-results, .srp-save-null-search, .s-message'))()
+    (() => !!document.querySelector('ul.srp-results, .srp-river-results, .srp-save-null-search, .s-message, a[href*="/itm/"]'))()
     """
 
     /// Pulls every result card above eBay's "Results matching fewer words" divider.
+    /// Handles both of eBay's layouts (s-card and s-item), with a generic fallback for anything else.
     static let extractScript = """
     (() => {
+      const text = el => ((el && (el.innerText || el.textContent)) || '').replace(/\\s+/g, ' ').trim();
+      const clean = t => t.replace(/^new listing\\s*/i, '').replace(/opens in a new window or tab/ig, '').trim();
+      const imageOf = card => {
+        const img = card.querySelector('img');
+        if (!img) return '';
+        let src = img.getAttribute('data-src') || img.getAttribute('data-defer-load') || img.getAttribute('src') || '';
+        if (!src && img.getAttribute('srcset')) src = img.getAttribute('srcset').split(' ')[0];
+        return /\\.gif($|\\?)/i.test(src) ? '' : src;
+      };
       const out = [];
-      const cards = document.querySelectorAll('ul.srp-results > li, li.s-item, li.s-card');
-      for (const li of cards) {
-        const text = (li.innerText || '').trim();
-        if ((li.className || '').includes('srp-river-answer') || li.querySelector('.srp-river-answer')) {
-          if (/fewer words|matching fewer/i.test(text)) break;
+      const seen = new Set();
+      const add = (card, link, titleEl, priceEl) => {
+        const url = link.href || link.getAttribute('href') || '';
+        const id = (url.match(/\\/itm\\/(?:[^/?]+\\/)?(\\d{9,15})/) || [])[1] || url;
+        if (!url || seen.has(id)) return;
+        let title = clean(text(titleEl || link));
+        if (!title || /^shop on ebay$/i.test(title)) return;
+        seen.add(id);
+        const strike = !!(priceEl && priceEl.querySelector('.STRIKETHROUGH, s, del, [class*="strikethrough"]'));
+        out.push({ title, url, price: text(priceEl), text: text(card), image: imageOf(card), strike });
+      };
+
+      const cards = document.querySelectorAll('ul.srp-results > li, li.s-item, li.s-card, div.s-card');
+      let structured = 0;
+      for (const card of cards) {
+        const cls = card.className || '';
+        const body = text(card);
+        if (cls.includes('srp-river-answer') || card.querySelector('.srp-river-answer')) {
+          if (/fewer words|matching fewer/i.test(body)) break;
           continue;
         }
-        const link = li.querySelector('a[href*="/itm/"]');
+        const link = card.querySelector('a[href*="/itm/"]');
         if (!link) continue;
-        const titleEl = li.querySelector('.s-card__title, .s-item__title, [role="heading"], h3');
-        let title = (titleEl ? titleEl.innerText : '').replace(/^new listing\\s*/i, '').replace(/opens in a new window or tab/i, '').trim();
-        if (!title || /^shop on ebay$/i.test(title)) continue;
-        const priceEl = li.querySelector('.s-card__price, .s-item__price');
-        const strike = !!(priceEl && priceEl.querySelector('.STRIKETHROUGH, s, del, [class*="strikethrough"]'));
-        const img = li.querySelector('img');
-        let image = '';
-        if (img) {
-          image = img.getAttribute('data-src') || img.getAttribute('data-defer-load') || img.currentSrc || img.src || '';
-          if (/\\.gif($|\\?)/i.test(image)) image = '';
-        }
-        out.push({ title, url: link.href, price: priceEl ? priceEl.innerText : '', text, image, strike });
+        structured++;
+        add(card, link,
+            card.querySelector('.s-card__title, .s-item__title, [role="heading"], h3'),
+            card.querySelector('.s-card__price, .s-item__price, [class*="price"]'));
       }
-      return JSON.stringify({ items: out, pageTitle: document.title || '' });
+
+      // Unknown layout: start from item links and use the nearest card-like parent.
+      if (structured === 0) {
+        const stop = Array.from(document.querySelectorAll('li, div, h2, h3')).find(el => /results matching fewer words/i.test(el.textContent || '') && (el.textContent || '').length < 200);
+        for (const link of document.querySelectorAll('a[href*="/itm/"]')) {
+          if (stop && (stop.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
+          const card = link.closest('li') || link.closest('[class*="card"]') || link.closest('[class*="item"]') || link.parentElement;
+          if (!card || !/\\$\\s?[\\d,]+/.test(text(card))) continue;
+          const priceEl = Array.from(card.querySelectorAll('span, div')).find(el => /^\\$\\s?[\\d,]+(\\.\\d{2})?$/.test(text(el)));
+          add(card, link, card.querySelector('[role="heading"], h3, h2') || link, priceEl);
+        }
+      }
+      const noResults = !!document.querySelector('.srp-save-null-search') || /no exact matches found/i.test(document.body ? document.body.innerText.slice(0, 5000) : '');
+      return JSON.stringify({ items: out, pageTitle: document.title || '', cards: cards.length, noResults });
     })()
     """
 
@@ -118,6 +127,8 @@ enum EbaySoldSearch {
     struct RawPage: Decodable {
         let items: [RawCard]
         let pageTitle: String
+        var cards: Int?
+        var noResults: Bool?
     }
 
     static func parsePage(_ json: String) throws -> RawPage {

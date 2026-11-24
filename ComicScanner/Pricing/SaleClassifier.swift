@@ -62,18 +62,18 @@ enum SaleClassifier {
     }
 
     /// Classifies every listing: same edition or not, raw or slabbed, and at what grade.
-    static func classify(_ listings: [SoldListing], spec: ComicSpec, options: CompOptions) -> [ClassifiedSale] {
+    static func classify(_ listings: [SoldListing], spec: ComicSpec, options: CompOptions, ignoreCover: Bool = false) -> [ClassifiedSale] {
         listings.map { listing in
             let traits = TitleTraits(title: listing.title)
             let kind: SaleKind = traits.company.map { .graded(company: $0, grade: traits.grade) }
                 ?? .raw(grade: rawGrade(in: listing.title))
             return ClassifiedSale(listing: listing, kind: kind,
-                                  excludedReason: editionMismatch(listing, traits: traits, spec: spec, options: options))
+                                  excludedReason: editionMismatch(listing, traits: traits, spec: spec, options: options, ignoreCover: ignoreCover))
         }
     }
 
     /// Everything that makes a sale a different book or an unusable comp (grade aside).
-    static func editionMismatch(_ listing: SoldListing, traits: TitleTraits, spec: ComicSpec, options: CompOptions) -> String? {
+    static func editionMismatch(_ listing: SoldListing, traits: TitleTraits, spec: ComicSpec, options: CompOptions, ignoreCover: Bool = false) -> String? {
         let title = TitleTraits.normalize(listing.title)
         if traits.lot { return "Lot or more than one book" }
         if traits.reprint && !spec.mentionsReprint { return "Facsimile or reprint" }
@@ -87,7 +87,9 @@ enum SaleClassifier {
             return "Signed copy"
         }
 
-        if spec.variant.trimmed.isEmpty && spec.exclusive.trimmed.isEmpty {
+        if ignoreCover {
+            // Fallback when nothing mentions the exact cover: any cover of the issue counts.
+        } else if spec.variant.trimmed.isEmpty && spec.exclusive.trimmed.isEmpty {
             if traits.variant { return "Variant or exclusive cover" }
         } else {
             for token in CompMatcher.variantTokens(spec) where !CompMatcher.tokenMatches(token, in: title) {

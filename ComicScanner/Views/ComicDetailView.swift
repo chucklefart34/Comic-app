@@ -87,6 +87,9 @@ struct ComicDetailView: View {
                             }
                         }
                         Text("Only completed sales are used — never asking prices.").font(.caption2).foregroundStyle(Theme.tertiary)
+                        Link(destination: EbaySoldSearch.soldURL(query: spec.broadQuery, comicsOnly: Prefs.searchComicsOnly)) {
+                            Label("See these sold listings on eBay", systemImage: "safari").font(.caption.weight(.semibold))
+                        }
                     }
                 }
 

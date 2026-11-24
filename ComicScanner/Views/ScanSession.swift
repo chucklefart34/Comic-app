@@ -19,6 +19,10 @@ final class ScanSession {
     var message = ""
     var identification: Identification?
     var photo: UIImage?
+    /// Extra photos taken on the "Which one is it?" card (barcode, other angles).
+    var evidencePhotos: [UIImage] = []
+    var collectingMore = false
+    var addingEvidence = false
 
     // Current result
     var record: ComicRecord?
@@ -33,8 +37,12 @@ final class ScanSession {
     // MARK: Camera events
 
     func handle(_ event: CameraEvent, context: ModelContext, bot: WebBot) {
-        // While you're choosing between matches, ignore the camera.
-        if phase == .confirm || phase == .identifying { return }
+        // On the "Which one is it?" card, the camera only counts when you've asked to add a photo.
+        if phase == .confirm {
+            if collectingMore && !addingEvidence { addEvidence(event, context: context, bot: bot) }
+            return
+        }
+        if phase == .identifying { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         work?.cancel()
 
@@ -73,8 +81,56 @@ final class ScanSession {
     private func start(status: String, photo: CGImage?) {
         statusText = status
         self.photo = photo.map { UIImage(cgImage: $0) }
+        evidencePhotos = self.photo.map { [$0] } ?? []
+        collectingMore = false
         identification = nil
         phase = .identifying
+    }
+
+    // MARK: Extra photos
+
+    func startCollectingMore() {
+        collectingMore = true
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    func stopCollectingMore() {
+        collectingMore = false
+    }
+
+    private func addEvidence(_ event: CameraEvent, context: ModelContext, bot: WebBot) {
+        guard let current = identification else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        addingEvidence = true
+        work?.cancel()
+        work = Task {
+            let extra: Identification
+            switch event {
+            case .barcode(let barcode, let frame):
+                statusText = barcode.issueNumber.map { "Barcode added · issue #\($0)" } ?? "Barcode added"
+                if let frame { evidencePhotos.append(UIImage(cgImage: CoverRecognizer.cropCover(frame))) }
+                extra = await Identifier.identify(barcode: barcode, frame: nil, context: context, bot: bot)
+            case .cover(let cover, _):
+                statusText = "Photo added"
+                evidencePhotos.append(UIImage(cgImage: cover))
+                extra = await Identifier.identify(cover: cover, context: context, bot: bot)
+            case .slab:
+                addingEvidence = false
+                collectingMore = false
+                handleSlab(event, context: context, bot: bot)
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let combined = await Identifier.combine(current, extra)
+            addingEvidence = false
+            collectingMore = false
+            finishIdentifying(combined, context: context, bot: bot)
+        }
+    }
+
+    private func handleSlab(_ event: CameraEvent, context: ModelContext, bot: WebBot) {
+        phase = .idle
+        handle(event, context: context, bot: bot)
     }
 
     private func finishIdentifying(_ result: Identification, context: ModelContext, bot: WebBot) {
@@ -114,8 +170,10 @@ final class ScanSession {
 
         work?.cancel()
         work = Task {
-            await fillDetails(record)
+            // Prices first (that's what you're waiting for); extra details load alongside.
+            async let details: Void = fillDetails(record)
             await price(record, bot: bot)
+            await details
         }
     }
 
@@ -182,6 +240,8 @@ final class ScanSession {
         work?.cancel()
         phase = .idle
         identification = nil
+        collectingMore = false
+        addingEvidence = false
     }
 
     func show(manualResult candidate: Candidate, context: ModelContext, bot: WebBot) {
