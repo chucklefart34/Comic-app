@@ -43,6 +43,10 @@ jobs:
             > test.log 2>&1 || STATUS=$?
           grep -v "CoreData" test.log | grep -E "\.swift:[0-9]+: error|error: |Test Case .*failed|Executed|TEST (SUCCEEDED|FAILED)|Fatal error|crashed" | head -200 || true
           grep -c "Test Case .*passed" test.log || true
+          echo "----- context -----"
+          grep -v "CoreData" test.log | grep -iE -B2 -A6 "StorageTests|crash|signal|restarting|Fatal" | head -150 || true
+          echo "----- tail -----"
+          grep -v "CoreData" test.log | tail -60
           exit ${STATUS:-0}
 
       - name: Upload test log
