@@ -29,6 +29,8 @@ final class CameraModel {
     /// 0…1 while the cover is held steady before auto-capture.
     var lockProgress: Double = 0
     var hasTorch = false
+    /// Goes up by one on every capture, so the screen can flash and reset the frame.
+    var captureCount = 0
 
     @ObservationIgnored var onEvent: ((CameraEvent) -> Void)?
 
@@ -47,7 +49,13 @@ final class CameraModel {
             }
         }
         processor.onEvent = { [weak self] event in
-            DispatchQueue.main.async { self?.onEvent?(event) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.captureCount += 1
+                self.coverInView = false
+                self.lockProgress = 0
+                self.onEvent?(event)
+            }
         }
     }
 
@@ -87,6 +95,12 @@ final class CameraModel {
     func setAutoCapture(_ on: Bool) {
         autoCapture = on
         processor.autoCapture = on
+    }
+
+    /// Whether barcodes are read the moment they're seen. Off in Tap mode, so nothing is captured without a tap
+    /// (a slab QR code seen just before a tap is still used).
+    func setBarcodesLive(_ on: Bool) {
+        processor.barcodesLive = on
     }
 
     /// Don't auto-capture again until the current comic leaves the frame.
@@ -197,6 +211,7 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     // Settings changed from the main thread; read on `queue`.
     var paused = false
     var autoCapture = true
+    var barcodesLive = true
 
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var latestFrame: CGImage?
@@ -208,6 +223,8 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var capturedRect: CGRect?
     private var lastBarcode: (payload: String, at: Date)?
     private var manualRequested = false
+    /// In Tap mode: the last slab QR seen, used if you tap right after.
+    private var recentSlab: (cert: SlabCert, at: Date)?
 
     private static let framesToLock = 3
 
@@ -239,9 +256,17 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         if manualRequested {
             manualRequested = false
+            if let slab = recentSlab, now.timeIntervalSince(slab.at) < 1.5 {
+                recentSlab = nil
+                requireNewComicNow()
+                onUpdate?(false, 0)
+                onEvent?(.slab(slab.cert))
+                return
+            }
             let cover = CoverRecognizer.cropCover(frame)
-            onEvent?(.cover(cover, frame: frame))
             requireNewComicNow()
+            onUpdate?(false, 0)
+            onEvent?(.cover(cover, frame: frame))
             return
         }
 
@@ -275,7 +300,7 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 capturedRect = nil
             }
             stableCount = 0
-            onUpdate?(bigEnough, 0)
+            onUpdate?(false, 0)
             return
         }
 
@@ -337,6 +362,12 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             lastBarcode = (payload, Date())
 
             let isProduct = [.ean13, .upce, .ean8].contains(code.type)
+            if !barcodesLive {
+                // Tap mode: nothing fires by itself. Remember a slab QR so a tap can use it.
+                if !isProduct, let cert = SlabCert(payload: payload) { recentSlab = (cert, Date()) }
+                lastBarcode = nil
+                continue
+            }
             if !isProduct, let cert = SlabCert(payload: payload) {
                 requireNewComicNow()
                 onEvent?(.slab(cert))

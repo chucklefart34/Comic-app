@@ -15,6 +15,7 @@ struct ScanScreen: View {
     @State private var fixItem: TrayItem?
     @State private var confirmingClear = false
     @AppStorage(Prefs.autoCaptureKey) private var autoCapture = true
+    @State private var flash = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +31,9 @@ struct ScanScreen: View {
                         }
                     ScanFrameOverlay(inView: camera.coverInView, progress: camera.lockProgress,
                                      hint: hint, highlight: session.collectingFor != nil || session.pendingID != nil)
+                        .allowsHitTesting(false)
+                    Color.white
+                        .opacity(flash ? 0.35 : 0)
                         .allowsHitTesting(false)
                 case .denied:
                     permissionView
@@ -78,7 +82,13 @@ struct ScanScreen: View {
             }
             session.onNeedNewComic = { camera.waitForNextComic() }
             camera.setAutoCapture(autoCapture)
+            updateBarcodes()
             await camera.start()
+        }
+        .onChange(of: session.collectingFor) { _, _ in updateBarcodes() }
+        .onChange(of: camera.captureCount) { _, _ in
+            flash = true
+            withAnimation(.easeOut(duration: 0.35)) { flash = false }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await camera.start() } } else { camera.stop() }
@@ -189,6 +199,12 @@ struct ScanScreen: View {
     private func setAuto(_ on: Bool) {
         autoCapture = on
         camera.setAutoCapture(on)
+        updateBarcodes()
+    }
+
+    /// Barcodes are read on sight in Auto mode, or while fixing a match; in Tap mode only a tap captures.
+    private func updateBarcodes() {
+        camera.setBarcodesLive(autoCapture || session.collectingFor != nil)
     }
 
     private func modeChip(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
