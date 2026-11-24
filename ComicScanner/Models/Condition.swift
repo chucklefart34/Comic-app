@@ -16,6 +16,15 @@ enum PriceBand: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// The condition stored when you pick this band (Mid is the default, so it's stored as "none chosen").
+    var condition: Condition? {
+        switch self {
+        case .low: return .veryGood
+        case .mid: return nil
+        case .high: return .nearMint
+        }
+    }
+
     static func of(grade: Double) -> PriceBand {
         if grade < 5.0 { return .low }
         if grade <= 9.0 { return .mid }

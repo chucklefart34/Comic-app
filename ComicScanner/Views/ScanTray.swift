@@ -96,13 +96,20 @@ struct TrayCard: View {
     let onComps: () -> Void
     let onFix: () -> Void
     let onSearch: () -> Void
+    @State private var choosingCondition = false
 
     var body: some View {
         VStack(spacing: 12) {
             HStack(alignment: .top, spacing: 14) {
                 cover
                     .frame(width: 92, height: 138)
-                    .onTapGesture { if item.record != nil { onComps() } }
+                    .onTapGesture { if item.record != nil { choosingCondition = true } }
+                    .confirmationDialog("Condition", isPresented: $choosingCondition, titleVisibility: .visible) {
+                        ForEach(PriceBand.allCases) { band in
+                            Button("\(band.rawValue) · \(band.gradeRange)") { setCondition(band.condition) }
+                        }
+                        Button("Details & comps") { onComps() }
+                    }
                 VStack(alignment: .leading, spacing: 4) {
                     titleRow
                     if let spec = item.record?.spec {
@@ -286,9 +293,8 @@ struct TrayCard: View {
 
     private var conditionMenu: some View {
         Menu {
-            Button("Market (any condition)") { setCondition(nil) }
-            ForEach(Condition.allCases.filter { $0 != .graded }) { condition in
-                Button("\(condition.rawValue) (\(condition.short))") { setCondition(condition) }
+            ForEach(PriceBand.allCases) { band in
+                Button("\(band.rawValue) (\(band.gradeRange))") { setCondition(band.condition) }
             }
             Menu("Graded slab") {
                 ForEach(GradingCompany.allCases) { company in
@@ -317,9 +323,9 @@ struct TrayCard: View {
     }
 
     private var conditionLabel: String {
-        guard let record = item.record, let condition = record.condition else { return "Any" }
+        guard let record = item.record, let condition = record.condition else { return "Mid" }
         if condition == .graded { return "\(record.spec.company.rawValue) \(record.spec.gradeText)" }
-        return condition.short
+        return condition.band?.rawValue ?? "Mid"
     }
 
     private var quantityStepper: some View {

@@ -154,6 +154,7 @@ enum SaleClassifier {
         if traits.lot { return "Lot or more than one book" }
         if traits.reprint && !spec.mentionsReprint { return "Facsimile or reprint" }
         if !CompMatcher.issueMatches(spec.issue, in: title) { return "Different issue number" }
+        if !seriesMatches(spec, title: title) { return "Different series" }
 
         if spec.signed, traits.signed, let last = spec.signerLastName, !title.contains(last) {
             return "Signed by someone else"
@@ -187,14 +188,49 @@ enum SaleClassifier {
     }
 
     /// How sure we are that a same-edition sale really is this book (0…1).
+    private static let stopWords: Set<String> = ["the", "and", "of", "a", "an", "vol", "volume", "comic", "comics"]
+
+    static func tokens(_ text: String) -> [String] {
+        text.lowercased().split { !($0.isLetter || $0.isNumber) }.map(String.init)
+    }
+
+    /// The words of the series name a sale must contain ("Superman/Wonder Woman" → superman, wonder, woman).
+    static func seriesWords(_ spec: ComicSpec) -> [String] {
+        tokens(spec.searchTitle).filter { !stopWords.contains($0) && ($0.count > 1 || $0.first?.isNumber == true) }
+    }
+
+    /// True when the sale names the same series: every word, the words run together ("spiderman"),
+    /// or the usual initials ("ASM" for Amazing Spider-Man). Stops "Wonder Woman #1" counting for "Superman/Wonder Woman #1".
+    static func seriesMatches(_ spec: ComicSpec, title: String) -> Bool {
+        let words = seriesWords(spec)
+        guard !words.isEmpty else { return true }
+        let saleWords = tokens(title)
+        let saleSet = Set(saleWords)
+        if words.allSatisfy(saleSet.contains) { return true }
+        let compact = saleWords.joined()
+        let missing = words.filter { !saleSet.contains($0) }
+        // Words run together: "Spiderman", "Xmen".
+        if !missing.isEmpty, compact.contains(words.joined()) { return true }
+        if missing.allSatisfy({ word in
+            guard let index = words.firstIndex(of: word) else { return false }
+            let pairs = [index > 0 ? words[index - 1] + word : nil, index + 1 < words.count ? word + words[index + 1] : nil]
+            return pairs.contains { $0.map(saleSet.contains) ?? false }
+        }) { return true }
+        // Initials: "ASM", "TMNT", "FF".
+        let initials = String(tokens(spec.searchTitle).filter { !["the", "of", "and"].contains($0) }.compactMap(\.first))
+        if initials.count >= 2, saleSet.contains(initials) { return true }
+        return false
+    }
+
     static func matchConfidence(_ listing: SoldListing, traits: TitleTraits, kind: SaleKind, spec: ComicSpec) -> Double {
         let title = TitleTraits.normalize(listing.title)
         var score = 1.0
 
         // Title words: how many of the series' words the listing contains.
-        let words = spec.searchTitle.lowercased().split(separator: " ").map(String.init).filter { $0.count > 2 }
+        let words = seriesWords(spec)
         if !words.isEmpty {
-            let present = words.filter { title.contains($0) }.count
+            let saleWords = Set(tokens(title))
+            let present = words.filter { saleWords.contains($0) }.count
             score -= 0.4 * (1 - Double(present) / Double(words.count))
         }
         // "#300" is clearer than a bare "300".

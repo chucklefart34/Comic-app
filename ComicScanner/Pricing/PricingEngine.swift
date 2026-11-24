@@ -115,6 +115,11 @@ struct Valuation: Codable, Hashable {
             let value = self.band(band)
             return (value.cents, value.basis, "\(condition?.rawValue ?? "") · \(band.rawValue)")
         }
+        // No condition chosen: Mid (5.0–9.0) is the default, falling back to the market value.
+        let mid = self.band(.mid)
+        if let cents = mid.cents {
+            return (cents, mid.basis, "Mid · \(PriceBand.mid.gradeRange)")
+        }
         return (marketCents, marketBasis, headlineGroup.map { "\($0) market value" } ?? "Market value")
     }
 

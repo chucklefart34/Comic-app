@@ -131,3 +131,14 @@ final class PricingTests: XCTestCase {
         XCTAssertNil(EbaySoldSearch.listing(from: foreign))
     }
 }
+
+final class DefaultConditionTests: XCTestCase {
+    func testMidIsTheDefault() {
+        let valuation = PricingEngine.valuation(spec: TestData.asm300, listings: TestData.asm300Market, sources: [],
+                                                options: CompOptions(includeShipping: false), now: TestData.now)
+        let value = valuation.value(for: nil, spec: TestData.asm300)
+        XCTAssertEqual(value.cents, valuation.band(.mid).cents)
+        XCTAssertTrue(value.label.hasPrefix("Mid"))
+        XCTAssertEqual(valuation.value(for: PriceBand.high.condition, spec: TestData.asm300).cents, valuation.band(.high).cents)
+    }
+}

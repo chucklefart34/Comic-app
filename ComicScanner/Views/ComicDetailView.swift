@@ -25,6 +25,11 @@ struct ComicDetailView: View {
                                   manualCents: record.manualValueCents, loading: refreshing, error: refreshError)
                     PriceBandsView(valuation: valuation, highlight: record.condition?.band, loading: refreshing)
                     ConditionPicker(selected: record.condition, spec: spec) { condition in
+                        if record.spec.graded {
+                            var updated = record.spec
+                            updated.graded = false
+                            record.update(spec: updated)
+                        }
                         record.condition = condition
                     } onGrade: { grade, company in
                         var updated = record.spec

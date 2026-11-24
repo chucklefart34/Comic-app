@@ -76,7 +76,7 @@ final class MatchingTests: XCTestCase {
 
     func testMatchConfidenceFlagsDoubtfulSales() {
         XCTAssertGreaterThanOrEqual(classify("Amazing Spider-Man #300 CGC 9.8").confidence ?? 0, 0.9)
-        let doubtful = classify("Spider-Man #300 #301 poster")
+        let doubtful = classify("Amazing Spider-Man #300 #301 poster")
         XCTAssertLessThan(doubtful.confidence ?? 1, 0.7)
         XCTAssertTrue(doubtful.needsReview)
     }
@@ -88,5 +88,28 @@ final class MatchingTests: XCTestCase {
         let rejected = SaleClassifier.classify([TestData.sale("43", "Amazing Spider-Man #300 NM", 100)], spec: TestData.asm300,
                                                options: CompOptions(), reviews: ["43": false])[0]
         XCTAssertEqual(rejected.excludedReason, "Rejected by you")
+    }
+}
+
+final class SeriesMatchingTests: XCTestCase {
+    private func reason(_ title: String, series: String, issue: String = "1") -> String? {
+        var spec = ComicSpec()
+        spec.title = series
+        spec.issue = issue
+        return SaleClassifier.classify([TestData.sale("1", title, 100)], spec: spec, options: CompOptions())[0].excludedReason
+    }
+
+    func testOtherSeriesAreLeftOut() {
+        XCTAssertEqual(reason("Wonder Woman #1 1987 George Perez", series: "Superman/Wonder Woman"), "Different series")
+        XCTAssertEqual(reason("Superman #1 2011 New 52", series: "Superman/Wonder Woman"), "Different series")
+        XCTAssertNil(reason("Superman Wonder Woman #1 DC 2013 NM", series: "Superman/Wonder Woman"))
+        XCTAssertNil(reason("Superman/Wonder Woman 1 Tony Daniel", series: "Superman/Wonder Woman"))
+    }
+
+    func testAbbreviationsAndJoinedWordsStillMatch() {
+        XCTAssertNil(reason("ASM 300 CGC 9.6", series: "Amazing Spider-Man", issue: "300"))
+        XCTAssertNil(reason("Amazing Spiderman #300 NM", series: "Amazing Spider-Man", issue: "300"))
+        XCTAssertNil(reason("Uncanny X Men #266", series: "Uncanny X-Men", issue: "266"))
+        XCTAssertEqual(reason("Spectacular Spider-Man #300", series: "Amazing Spider-Man", issue: "300"), "Different series")
     }
 }

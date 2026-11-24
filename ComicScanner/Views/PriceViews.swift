@@ -63,25 +63,31 @@ struct BandCard: View {
 struct ConditionPicker: View {
     let selected: Condition?
     let spec: ComicSpec
-    let onSelect: (Condition) -> Void
+    let onSelect: (Condition?) -> Void
     let onGrade: (Double, GradingCompany) -> Void
+
+    /// Mid when nothing is chosen.
+    private var selectedBand: PriceBand? {
+        guard selected != .graded else { return nil }
+        return selected?.band ?? .mid
+    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(Condition.allCases.filter { $0 != .graded }) { condition in
-                    chip(condition.rawValue, active: selected == condition) { onSelect(condition) }
+                ForEach(PriceBand.allCases) { band in
+                    chip("\(band.rawValue) · \(band.gradeRange)", active: selectedBand == band) { onSelect(band.condition) }
                 }
                 Menu {
                     ForEach(GradingCompany.allCases) { company in
                         Menu(company.rawValue) {
-                            ForEach(standardGrades, id: \.self) { grade in
+                            ForEach(standardGrades.reversed(), id: \.self) { grade in
                                 Button(gradeLabel(grade)) { onGrade(grade, company) }
                             }
                         }
                     }
                 } label: {
-                    chipLabel(selected == .graded ? "\(spec.company.rawValue) \(spec.gradeText)" : "CGC Graded", active: selected == .graded)
+                    chipLabel(selected == .graded ? "\(spec.company.rawValue) \(spec.gradeText)" : "Graded", active: selected == .graded)
                 }
             }
         }
