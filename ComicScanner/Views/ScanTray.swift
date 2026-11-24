@@ -117,11 +117,12 @@ struct TrayCard: View {
                                 .lineLimit(1)
                         }
                     }
-                    if item.needsCheck && !item.isWorking {
-                        Button(action: onFix) {
-                            Label("Check match", systemImage: "exclamationmark.triangle.fill")
+                    if item.record != nil && !item.isWorking && !item.addingPhoto {
+                        Button { session.startAddingPhoto(to: item) } label: {
+                            Label(item.needsCheck ? "Not sure — scan barcode" : "Wrong? Scan barcode",
+                                  systemImage: "barcode.viewfinder")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(Theme.caution)
+                                .foregroundStyle(item.needsCheck ? Theme.caution : Theme.secondary)
                         }
                         .buttonStyle(.plain)
                     }

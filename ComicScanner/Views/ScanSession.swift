@@ -90,13 +90,18 @@ final class ScanSession {
             item.firstWasBarcode = true
             item.status = barcode.issueNumber.map { "Barcode · issue #\($0)" } ?? "Barcode read"
             add(item)
-            startWaiting(item) { await Identifier.identify(barcode: barcode, frame: nil, context: context, bot: bot) }
-            onNeedNewComic?()
+            item.task = Task {
+                let result = await Identifier.identify(barcode: barcode, frame: nil, context: context, bot: bot)
+                await finish(item, with: result, context: context, bot: bot)
+            }
         case .cover(let cover, _):
             item = TrayItem(photo: UIImage(cgImage: cover))
             item.status = "Cover captured"
             add(item)
-            startWaiting(item) { await Identifier.identify(cover: cover, context: context, bot: bot) }
+            item.task = Task {
+                let result = await Identifier.identify(cover: cover, context: context, bot: bot)
+                await finish(item, with: result, context: context, bot: bot)
+            }
         case .slab(let cert):
             item = TrayItem(photo: nil)
             item.status = "Reading \(cert.company.rawValue) cert \(cert.number)…"

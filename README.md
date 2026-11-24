@@ -9,7 +9,7 @@ A personal iPhone app for comic collectors: point the camera at a comic, and it 
 **Scanning**
 - Camera with a scanning frame, Auto (captures when a cover is steady) or Tap mode, light and camera switch.
 - **Scan tray**: every book you scan becomes a card with its cover, price, condition, quantity and Comps. Each one identifies and prices itself in the background, so you never wait between books. Swipe between cards, see the running **Total**, and **Add N** saves them all to your Collection (one entry per copy).
-- **Two photos per book**: the cover, then the barcode (the UPC plus the 5-digit add-on: issue, cover, printing). No barcode? Scan the cover a second time. Both are combined before pricing, and the first photo is already being looked up while you take the second. Slab QR codes need only one scan.
+- Barcodes: the UPC plus the 5-digit add-on (issue number, cover, printing). One scan per book; if the match is wrong, tap **Wrong? Scan barcode** on its card and scan the barcode to fix it.
 - CGC / PSA slab QR codes: reads the cert page for title, grade, label and signer.
 - If the edition isn't certain, the closest match is used and the card is flagged **Check match**: tap it (or the pencil) to pick the right cover, search, or scan the barcode as an extra photo.
 

@@ -125,7 +125,7 @@ struct ScanScreen: View {
     }
 
     private var hint: String {
-        if session.collectingFor != nil { return "Scan the barcode or another photo of that book" }
+        if session.collectingFor != nil { return "Scan the barcode of that book" }
         if let pending = session.pending {
             return pending.firstWasBarcode ? "Now tap to scan the front cover"
                                            : "Now scan the barcode — or tap to scan the cover again"
