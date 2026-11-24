@@ -1,62 +1,49 @@
-import SwiftUI
 import SwiftData
+import SwiftUI
 
 @main
 struct ComicScannerApp: App {
     @State private var bot = WebBot()
-    @State private var cart = DealCart()
-    @State private var appState = AppState()
 
     init() {
         Prefs.register()
+        let appearance = UITabBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = UIColor(Theme.background)
+        UITabBar.appearance().standardAppearance = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
     }
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(bot)
-                .environment(cart)
-                .environment(appState)
+                .tint(Theme.accent)
+                .preferredColorScheme(.dark)
         }
-        .modelContainer(for: [CollectionItem.self, Deal.self, Show.self, CoverPrint.self])
+        .modelContainer(for: [ComicRecord.self, CoverPrint.self, BarcodeMemory.self])
     }
-}
-
-@MainActor
-@Observable
-final class AppState {
-    enum Tab: Hashable { case scan, lookUp, deal, collection, shows }
-    var tab: Tab = .scan
 }
 
 struct RootView: View {
     @Environment(WebBot.self) private var bot
-    @Environment(DealCart.self) private var cart
-    @Environment(AppState.self) private var appState
+    @State private var tab = 0
 
     var body: some View {
         @Bindable var bot = bot
-        @Bindable var appState = appState
 
-        TabView(selection: $appState.tab) {
-            ScanView()
-                .tabItem { Label("Scan", systemImage: "barcode.viewfinder") }
-                .tag(AppState.Tab.scan)
-            LookUpView()
-                .tabItem { Label("Look Up", systemImage: "magnifyingglass") }
-                .tag(AppState.Tab.lookUp)
-            DealView()
-                .tabItem { Label("Deal", systemImage: "arrow.left.arrow.right") }
-                .badge(cart.lines.count)
-                .tag(AppState.Tab.deal)
-            CollectionView()
-                .tabItem { Label("Inventory", systemImage: "books.vertical") }
-                .tag(AppState.Tab.collection)
-            ShowsView()
-                .tabItem { Label("Shows", systemImage: "tent") }
-                .tag(AppState.Tab.shows)
+        TabView(selection: $tab) {
+            ScanScreen()
+                .tabItem { Label("Scan", systemImage: "viewfinder") }
+                .tag(0)
+            CollectionScreen()
+                .tabItem { Label("Collection", systemImage: "books.vertical.fill") }
+                .tag(1)
+            SettingsScreen()
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(2)
         }
-        // The bot's browser lives here, invisible, so pages load and run normally.
+        // The pricing bot's browser lives here, invisible, so pages load normally.
         .background {
             WebViewContainer(webView: bot.webView, hidden: true)
                 .frame(width: 1, height: 1)
@@ -70,74 +57,18 @@ struct RootView: View {
     }
 }
 
-/// Screens reachable from the Scan, Look Up and Inventory tabs.
-enum Route: Hashable {
-    case barcode(ComicBarcode)
-    case cert(SlabCert)
-    case spec(ComicSpec)
-    case comps(ComicSpec)
-}
-
-extension View {
-    func comicDestinations() -> some View {
-        navigationDestination(for: Route.self) { route in
-            switch route {
-            case .barcode(let barcode):
-                CoverPickerView(barcode: barcode)
-            case .cert, .spec:
-                SpecEditorView(source: route)
-            case .comps(let spec):
-                CompsView(spec: spec)
-            }
-        }
-    }
-}
-
-/// Lets a screen deep in a tab jump back to the tab's first screen (e.g. back to the scanner after adding a book to a deal).
-struct PopToRoot {
-    let action: () -> Void
-    init(_ action: @escaping () -> Void = {}) { self.action = action }
-    func callAsFunction() { action() }
-}
-
-private struct PopToRootKey: EnvironmentKey {
-    static let defaultValue = PopToRoot()
-}
-
-extension EnvironmentValues {
-    var popToRoot: PopToRoot {
-        get { self[PopToRootKey.self] }
-        set { self[PopToRootKey.self] = newValue }
-    }
-}
-
 enum Prefs {
     static let includeShipping = "includeShipping"
     static let includeBestOffer = "includeBestOffer"
     static let comicsOnly = "comicsOnly"
-    static let buyPercentKey = "buyPercent"
-    static let tradePercentKey = "tradePercent"
-    static let roundOffersKey = "roundOffers"
-    static let buysForSaleKey = "buysForSale"
-    static let gradingFeeKey = "gradingFee"
-    static let activeShowKey = "activeShow"
-    static let returnToScannerKey = "returnToScanner"
-    static let shelfPercentKey = "shelfPercent"
-    static let shelfRoundingKey = "shelfRounding"
+    static let autoCaptureKey = "autoCapture"
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             includeShipping: true,
             includeBestOffer: false,
             comicsOnly: true,
-            buyPercentKey: 60,
-            tradePercentKey: 75,
-            roundOffersKey: true,
-            buysForSaleKey: true,
-            gradingFeeKey: 40,
-            returnToScannerKey: true,
-            shelfPercentKey: 100,
-            shelfRoundingKey: ShelfRounding.ninetyNine.rawValue,
+            autoCaptureKey: true,
         ])
     }
 
@@ -149,43 +80,4 @@ enum Prefs {
     }
 
     static var searchComicsOnly: Bool { UserDefaults.standard.bool(forKey: comicsOnly) }
-    static var buyPercent: Int { UserDefaults.standard.integer(forKey: buyPercentKey) }
-    static var tradePercent: Int { UserDefaults.standard.integer(forKey: tradePercentKey) }
-    static var roundOffers: Bool { UserDefaults.standard.bool(forKey: roundOffersKey) }
-    static var buysGoForSale: Bool { UserDefaults.standard.bool(forKey: buysForSaleKey) }
-    static var gradingFeeCents: Int { UserDefaults.standard.integer(forKey: gradingFeeKey) * 100 }
-    static var returnToScanner: Bool { UserDefaults.standard.bool(forKey: returnToScannerKey) }
-
-    static var shelfPercent: Int { UserDefaults.standard.integer(forKey: shelfPercentKey) }
-    static var shelfRounding: ShelfRounding {
-        ShelfRounding(rawValue: UserDefaults.standard.string(forKey: shelfRoundingKey) ?? "") ?? .ninetyNine
-    }
-
-    /// The price to put a book out at: market × your markup, rounded the way your store prices.
-    static func shelfPrice(forMarket marketCents: Int?) -> Int? {
-        guard let marketCents, marketCents > 0 else { return nil }
-        let raw = Double(marketCents) * Double(shelfPercent) / 100
-        switch shelfRounding {
-        case .ninetyNine:
-            let dollars = max(1, Int((raw / 100).rounded()))
-            return dollars * 100 - 1
-        case .whole:
-            return max(1, Int((raw / 100).rounded())) * 100
-        case .exact:
-            return Int(raw.rounded())
-        }
-    }
-
-    static var activeShowRef: UUID? {
-        get { UserDefaults.standard.string(forKey: activeShowKey).flatMap(UUID.init(uuidString:)) }
-        set { UserDefaults.standard.set(newValue?.uuidString, forKey: activeShowKey) }
-    }
-}
-
-enum ShelfRounding: String, CaseIterable, Identifiable {
-    case ninetyNine = "Ends in .99"
-    case whole = "Whole dollars"
-    case exact = "Exact"
-
-    var id: String { rawValue }
 }

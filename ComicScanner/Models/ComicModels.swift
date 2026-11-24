@@ -107,9 +107,6 @@ extension StringProtocol {
     var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }
 
-func formatCents(_ cents: Int) -> String {
-    (Double(cents) / 100).formatted(.currency(code: "USD"))
-}
 
 /// First capture group (or whole match if there is no group) of a case-insensitive regex.
 func firstMatch(_ pattern: String, in text: String) -> String? {

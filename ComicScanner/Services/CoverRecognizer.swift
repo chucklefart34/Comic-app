@@ -79,22 +79,12 @@ enum CoverRecognizer {
 
     // MARK: Recognising
 
-    /// Finds the learned covers that look most like the photo. Also returns the cropped cover so it can be learned.
-    static func matches(for photo: UIImage, context: ModelContext, limit: Int = 6) async throws -> (matches: [CoverMatch], cover: CGImage) {
-        guard let cgImage = normalized(photo) else { throw CoverRecognizerError.noImage }
-
-        let analysed = await Task.detached(priority: .userInitiated) { () -> (CGImage, Data)? in
-            let cover = cropCover(cgImage)
-            guard let observation = try? makePrint(from: cover),
-                  let archived = try? NSKeyedArchiver.archivedData(withRootObject: observation, requiringSecureCoding: true) else { return nil }
-            return (cover, archived)
-        }.value
-        guard let analysed, let target = unarchive(analysed.1) else {
-            throw CoverRecognizerError.noFingerprint
-        }
-        let cover = analysed.0
-
+    /// Finds the learned covers that look most like an already-cropped cover photo.
+    static func matches(forCover cover: CGImage, context: ModelContext, limit: Int = 6) async throws -> [CoverMatch] {
         let prints = (try? context.fetch(FetchDescriptor<CoverPrint>())) ?? []
+        guard !prints.isEmpty else { return [] }
+        guard let target = await fingerprint(cover) else { throw CoverRecognizerError.noFingerprint }
+
         var bestPerBook: [String: CoverMatch] = [:]
         for print in prints {
             guard let observation = observation(for: print) else { continue }
@@ -108,7 +98,27 @@ enum CoverRecognizer {
             bestPerBook[print.bookKey] = CoverMatch(print: print, distance: distance)
         }
         let ranked = bestPerBook.values.sorted { $0.distance < $1.distance }
-        return (Array(ranked.prefix(limit)), cover)
+        return Array(ranked.prefix(limit))
+    }
+
+    /// Fingerprint of an image, computed off the main thread.
+    static func fingerprint(_ image: CGImage) async -> VNFeaturePrintObservation? {
+        let archived = await Task.detached(priority: .userInitiated) { () -> Data? in
+            guard let observation = try? makePrint(from: image) else { return nil }
+            return try? NSKeyedArchiver.archivedData(withRootObject: observation, requiringSecureCoding: true)
+        }.value
+        return archived.flatMap(unarchive)
+    }
+
+    /// Visual distance between two fingerprints (lower = more alike), or nil if they can't be compared.
+    static func distance(_ a: VNFeaturePrintObservation, _ b: VNFeaturePrintObservation) -> Float? {
+        var distance: Float = 0
+        do {
+            try a.computeDistance(&distance, to: b)
+            return distance
+        } catch {
+            return nil
+        }
     }
 
     static func learnedCount(context: ModelContext) -> Int {
