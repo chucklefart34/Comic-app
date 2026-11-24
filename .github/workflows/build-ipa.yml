@@ -41,7 +41,8 @@ jobs:
             -destination "id=$UDID" \
             CODE_SIGNING_ALLOWED=NO \
             > test.log 2>&1 || STATUS=$?
-          grep -E "error:|Test Case .*(passed|failed)|XCTAssert|Executed|TEST (SUCCEEDED|FAILED)" test.log | head -300 || true
+          grep -v "CoreData" test.log | grep -E "\.swift:[0-9]+: error|error: |Test Case .*failed|Executed|TEST (SUCCEEDED|FAILED)|Fatal error|crashed" | head -200 || true
+          grep -c "Test Case .*passed" test.log || true
           exit ${STATUS:-0}
 
       - name: Upload test log
