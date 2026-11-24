@@ -10,8 +10,9 @@ permissions:
   contents: write
 
 jobs:
-  test:
+  test-and-build:
     runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -49,31 +50,6 @@ jobs:
           grep -v "CoreData" test.log | tail -60
           exit ${STATUS:-0}
 
-      - name: Upload test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-log
-          path: test.log
-
-  build:
-    needs: test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        os: [macos-15]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Pick newest Xcode
-        run: |
-          XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
-          echo "Using $XCODE"
-          sudo xcode-select -s "$XCODE"
-          xcodebuild -version
-
       - name: Build (unsigned)
         run: |
           set -o pipefail
@@ -101,12 +77,12 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-${{ matrix.os }}
+          name: build-log
           path: build.log
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ComicScanner-ipa-${{ matrix.os }}
+          name: ComicScanner-ipa
           path: ComicScanner.ipa
 
       - name: Publish release
@@ -120,3 +96,10 @@ jobs:
           body: |
             Unsigned build of Comic Scanner. Install it with Sideloadly or AltStore, which sign it with your own Apple ID.
             See the README for step-by-step install instructions.
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
