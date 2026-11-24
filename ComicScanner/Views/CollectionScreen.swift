@@ -165,23 +165,27 @@ struct CollectionScreen: View {
     }
 
     private var csv: String {
-        var rows = ["Title,Issue,Publisher,Year,Edition,Condition,Value,Confidence,Paid,Scanned"]
+        var rows: [String] = ["Title,Issue,Publisher,Year,Edition,Condition,Value,Confidence,Paid,Scanned"]
         for record in shown {
-            let fields = [
-                record.title, record.issue, record.publisher, record.year, record.editionLine,
-                record.condition?.rawValue ?? "",
-                record.displayValueCents.map { String(format: "%.2f", Double($0) / 100) } ?? "",
-                record.confidence?.rawValue ?? "",
-                record.purchaseCents.map { String(format: "%.2f", Double($0) / 100) } ?? "",
-                record.scannedAt.formatted(date: .numeric, time: .omitted),
-            ]
-            rows.append(fields.map { field in
-                field.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" })
-                    ? "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-                    : field
-            }.joined(separator: ","))
+            var fields: [String] = [record.title, record.issue, record.publisher, record.year, record.editionLine]
+            fields.append(record.condition?.rawValue ?? "")
+            fields.append(Self.dollars(record.displayValueCents))
+            fields.append(record.confidence?.rawValue ?? "")
+            fields.append(Self.dollars(record.purchaseCents))
+            fields.append(record.scannedAt.formatted(date: .numeric, time: .omitted))
+            rows.append(fields.map(Self.csvEscape).joined(separator: ","))
         }
         return rows.joined(separator: "\n")
+    }
+
+    private static func dollars(_ cents: Int?) -> String {
+        guard let cents else { return "" }
+        return String(format: "%.2f", Double(cents) / 100)
+    }
+
+    private static func csvEscape(_ field: String) -> String {
+        guard field.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" }) else { return field }
+        return "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 }
 
