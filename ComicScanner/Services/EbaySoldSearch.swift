@@ -33,7 +33,7 @@ enum EbaySoldSearch {
     /// Sold comps for a spec.
     @MainActor
     static func soldListings(for spec: ComicSpec, bot: WebBot, comicsOnly: Bool) async throws -> [SoldListing] {
-        try await soldListings(query: spec.ebayQuery, bot: bot, comicsOnly: comicsOnly)
+        try await soldListings(query: spec.broadQuery, bot: bot, comicsOnly: comicsOnly)
     }
 
     @MainActor

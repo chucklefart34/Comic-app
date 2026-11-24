@@ -124,19 +124,21 @@ struct CollectionScreen: View {
 
     private var summary: some View {
         let list = shown
-        let total = list.compactMap(\.displayValueCents).reduce(0, +)
-        let paid = list.compactMap(\.purchaseCents).reduce(0, +)
+        let total: Int = list.compactMap(\.displayValueCents).reduce(0, +)
+        let paid: Int = list.compactMap(\.purchaseCents).reduce(0, +)
+        let countText = "\(list.count) comic\(list.count == 1 ? "" : "s")"
+        let gainText = (total >= paid ? "+" : "−") + formatCents(abs(total - paid))
+        let gainColor: Color = total >= paid ? Theme.good : Theme.accent
         return VStack(alignment: .leading, spacing: 4) {
             Text("ESTIMATED VALUE").font(.caption2.weight(.bold)).foregroundStyle(Theme.secondary)
             Text(formatCents(total))
                 .font(.system(size: 38, weight: .heavy, design: .rounded))
                 .monospacedDigit()
             HStack(spacing: 12) {
-                Text("\(list.count) comic\(list.count == 1 ? "" : "s")")
+                Text(countText)
                 if paid > 0 {
-                    Text("Paid \(formatCents(paid))")
-                    Text("\(total >= paid ? "+" : "−")\(formatCents(abs(total - paid)))")
-                        .foregroundStyle(total >= paid ? Theme.good : Theme.accent)
+                    Text("Paid " + formatCents(paid))
+                    Text(gainText).foregroundStyle(gainColor)
                 }
             }
             .font(.caption.weight(.semibold))
