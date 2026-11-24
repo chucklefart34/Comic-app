@@ -31,12 +31,14 @@ final class ScanSession {
     var priceError: String?
 
     private var work: Task<Void, Never>?
+    private var modelContext: ModelContext?
 
     var spec: ComicSpec? { record?.spec }
 
     // MARK: Camera events
 
     func handle(_ event: CameraEvent, context: ModelContext, bot: WebBot) {
+        modelContext = context
         // On the "Which one is it?" card, the camera only counts when you've asked to add a photo.
         if phase == .confirm {
             if collectingMore && !addingEvidence { addEvidence(event, context: context, bot: bot) }
@@ -156,13 +158,14 @@ final class ScanSession {
     }
 
     func present(_ candidate: Candidate, from identification: Identification?, context: ModelContext, bot: WebBot, learn: Bool) {
+        modelContext = context
         if learn { Identifier.remember(candidate, from: identification, context: context) }
 
         let thumbnail = identification?.photo.flatMap(CoverRecognizer.thumbnailJPEG)
         let record = ComicRecord(spec: candidate.spec, imageURL: candidate.imageURL ?? candidate.spec.coverImageURL.nilIfEmpty, thumbnail: thumbnail)
         context.insert(record)
         self.record = record
-        valuation = PricingService.cached(candidate.spec)
+        valuation = PricingService.cached(candidate.spec) ?? SalesStore.latestValuation(for: candidate.spec, context: context)
         if let valuation { record.setValuation(valuation) }
         priceError = nil
         phase = .result
@@ -197,7 +200,7 @@ final class ScanSession {
         loadingPrice = true
         defer { loadingPrice = false }
         do {
-            let result = try await PricingService.valuation(for: record.spec, bot: bot, forceRefresh: force)
+            let result = try await PricingService.valuation(for: record.spec, bot: bot, context: modelContext, forceRefresh: force)
             guard !Task.isCancelled else { return }
             record.setValuation(result)
             if self.record === record { valuation = result; priceError = nil }

@@ -24,6 +24,9 @@ struct EditComicView: View {
                 TextField("Variant (e.g. Cover B, Virgin 1:25)", text: $spec.variant).autocorrectionDisabled()
                 TextField("Exclusive (e.g. Mile High, SDCC)", text: $spec.exclusive).autocorrectionDisabled()
                 Stepper("\(ordinal(spec.printing)) printing", value: $spec.printing, in: 1...10)
+                Picker("Edition", selection: $spec.printEdition) {
+                    ForEach(PrintEdition.allCases) { Text($0.rawValue).tag($0) }
+                }
                 Toggle("Reprint / facsimile", isOn: $spec.isReprint)
             } header: {
                 Text("Edition")

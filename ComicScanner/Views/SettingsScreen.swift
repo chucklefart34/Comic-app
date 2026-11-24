@@ -8,6 +8,9 @@ struct SettingsScreen: View {
     @AppStorage(Prefs.includeBestOffer) private var includeBestOffer = false
     @AppStorage(Prefs.comicsOnly) private var comicsOnly = true
     @AppStorage(Prefs.autoCaptureKey) private var autoCapture = true
+    @AppStorage(Prefs.autoUpdateDaysKey) private var autoUpdateDays = 7
+    @Query(sort: \ImportLog.date, order: .reverse) private var logs: [ImportLog]
+    @Query private var savedSales: [SaleRecord]
 
     @State private var verseDBToken = Tokens.verseDB ?? ""
     @State private var priceChartingToken = Tokens.priceCharting ?? ""
@@ -65,6 +68,28 @@ struct SettingsScreen: View {
                     Text("Data sources")
                 } footer: {
                     Text("Tokens are stored in the iPhone's Keychain and sent only to that service.")
+                }
+
+                Section {
+                    Picker("Update collection prices", selection: $autoUpdateDays) {
+                        Text("Off").tag(0)
+                        Text("Daily").tag(1)
+                        Text("Weekly").tag(7)
+                        Text("Monthly").tag(30)
+                    }
+                    LabeledContent("Sales saved on this phone", value: "\(savedSales.count)")
+                    if let last = logs.first {
+                        LabeledContent("Last lookup", value: last.date.relativeText)
+                    }
+                    let failures = logs.prefix(50).filter { $0.error != nil }.count
+                    if failures > 0 {
+                        Text("\(failures) of the last \(min(50, logs.count)) lookups failed").font(.caption).foregroundStyle(Theme.caution)
+                    }
+                    NavigationLink("Pricing log") { ImportLogView() }
+                } header: {
+                    Text("Pricing status")
+                } footer: {
+                    Text("When the app opens, saved comics whose prices are older than this are re-priced, one at a time. Every lookup is logged, and every matching sale is saved so price history builds up beyond eBay's ~90 days.")
                 }
 
                 Section {
@@ -148,7 +173,7 @@ struct SettingsScreen: View {
         spec.title = "Amazing Spider-Man"
         spec.issue = "300"
         do {
-            let valuation = try await PricingService.valuation(for: spec, bot: bot, forceRefresh: true)
+            let valuation = try await PricingService.valuation(for: spec, bot: bot, context: modelContext, forceRefresh: true)
             let counted = valuation.sales.filter(\.counted).count
             let price = valuation.marketCents.map(formatCents) ?? "N/A"
             testResult = "✓ \(EbayPages.last.summary)\n\(counted) matching sales · market \(price)"

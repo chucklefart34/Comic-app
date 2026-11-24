@@ -127,8 +127,15 @@ struct CollectionScreen: View {
         let total: Int = list.compactMap(\.displayValueCents).reduce(0, +)
         let paid: Int = list.compactMap(\.purchaseCents).reduce(0, +)
         let countText = "\(list.count) comic\(list.count == 1 ? "" : "s")"
-        let gainText = (total >= paid ? "+" : "−") + formatCents(abs(total - paid))
-        let gainColor: Color = total >= paid ? Theme.good : Theme.accent
+        // Profit only counts comics with both a price paid and a value.
+        let tracked = list.filter { $0.purchaseCents != nil && $0.displayValueCents != nil }
+        let trackedPaid: Int = tracked.compactMap(\.purchaseCents).reduce(0, +)
+        let trackedValue: Int = tracked.compactMap(\.displayValueCents).reduce(0, +)
+        let percent: Double = trackedPaid > 0 ? Double(trackedValue - trackedPaid) / Double(trackedPaid) * 100 : 0
+        let gainText = (trackedValue >= trackedPaid ? "+" : "−") + formatCents(abs(trackedValue - trackedPaid))
+            + String(format: " (%@%.0f%%)", percent >= 0 ? "+" : "", percent)
+        let gainColor: Color = trackedValue >= trackedPaid ? Theme.good : Theme.accent
+        let stale = list.filter { $0.inCollection && $0.isStale }.count
         return VStack(alignment: .leading, spacing: 4) {
             Text("ESTIMATED VALUE").font(.caption2.weight(.bold)).foregroundStyle(Theme.secondary)
             Text(formatCents(total))
@@ -143,6 +150,10 @@ struct CollectionScreen: View {
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(Theme.secondary)
+            if stale > 0 {
+                Text("\(stale) price\(stale == 1 ? "" : "s") older than a week — use Update all prices")
+                    .font(.caption2).foregroundStyle(Theme.caution)
+            }
             if updating {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -159,19 +170,21 @@ struct CollectionScreen: View {
         let list = shown
         for (index, record) in list.enumerated() {
             progress = "Updating \(index + 1) of \(list.count): \(record.displayTitle)"
-            guard let valuation = try? await PricingService.valuation(for: record.spec, bot: bot, forceRefresh: true) else { continue }
+            guard let valuation = try? await PricingService.valuation(for: record.spec, bot: bot, context: modelContext, forceRefresh: true) else { continue }
             record.setValuation(valuation)
         }
     }
 
     private var csv: String {
-        var rows: [String] = ["Title,Issue,Publisher,Year,Edition,Condition,Value,Confidence,Paid,Scanned"]
+        var rows: [String] = ["Title,Issue,Publisher,Year,Edition,Condition,Value,Confidence,Paid,Bought,Profit,Scanned"]
         for record in shown {
             var fields: [String] = [record.title, record.issue, record.publisher, record.year, record.editionLine]
             fields.append(record.condition?.rawValue ?? "")
             fields.append(Self.dollars(record.displayValueCents))
             fields.append(record.confidence?.rawValue ?? "")
             fields.append(Self.dollars(record.purchaseCents))
+            fields.append(record.purchaseDate?.formatted(date: .numeric, time: .omitted) ?? "")
+            fields.append(Self.dollars(record.profitCents))
             fields.append(record.scannedAt.formatted(date: .numeric, time: .omitted))
             rows.append(fields.map(Self.csvEscape).joined(separator: ","))
         }
@@ -208,6 +221,11 @@ struct RecordRow: View {
             VStack(alignment: .trailing, spacing: 4) {
                 Text(record.displayValueCents.map(formatCents) ?? "—")
                     .font(.headline.monospacedDigit())
+                if let profit = record.profitCents {
+                    Text("\(profit >= 0 ? "+" : "−")\(formatCents(abs(profit)))")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(profit >= 0 ? Theme.good : Theme.accent)
+                }
                 if let confidence = record.confidence, confidence != .high {
                     Text(confidence == .low ? "Estimate" : "\(confidence.rawValue) conf.")
                         .font(.caption2).foregroundStyle(Theme.caution)

@@ -54,11 +54,53 @@ struct ComicDetailView: View {
                     .tint(Theme.accent)
                 }
 
+                NavigationLink {
+                    PricingDashboardView(spec: spec, record: record)
+                } label: {
+                    HStack {
+                        Label("Full pricing: history, grades, CGC vs CBCS, asking prices", systemImage: "chart.line.uptrend.xyaxis")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        if let flagged = valuation?.reviewCount, flagged > 0 {
+                            Text("\(flagged) to check").font(.caption.weight(.bold)).foregroundStyle(Theme.caution)
+                        }
+                        Image(systemName: "chevron.right").foregroundStyle(Theme.tertiary)
+                    }
+                    .padding(14)
+                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 18))
+                }
+                .buttonStyle(.plain)
+
+                if let valuation, let median = valuation.medianCents {
+                    section(title: "\(valuation.headlineGroup ?? "Raw") sales summary") {
+                        HStack {
+                            summaryTile("Median", formatCents(median))
+                            summaryTile("Average", valuation.averageCents.map(formatCents) ?? "—")
+                            summaryTile("Low", valuation.lowCents.map(formatCents) ?? "—")
+                            summaryTile("High", valuation.highCents.map(formatCents) ?? "—")
+                        }
+                        if let windows = valuation.windows {
+                            HStack {
+                                ForEach(windows) { window in
+                                    summaryTile("\(window.days)d", window.medianCents.map(formatCents) ?? "—", detail: "\(window.count) sales")
+                                }
+                            }
+                        }
+                        if let trend = valuation.trendPercent {
+                            Label(String(format: "Trend: %@%.0f%% (last 30 days vs the 90 before)", trend >= 0 ? "+" : "", trend),
+                                  systemImage: trend >= 0 ? "arrow.up.right" : "arrow.down.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(trend >= 0 ? Theme.good : Theme.accent)
+                        }
+                    }
+                }
+
                 if let valuation, !valuation.graded.filter({ $0.count > 0 }).isEmpty {
                     section(title: "Graded (slab) sales") {
                         ForEach(valuation.graded.filter { $0.count > 0 }) { slab in
                             HStack {
-                                Text("\(slab.company.rawValue) \(gradeLabel(slab.grade))").font(.subheadline.weight(.semibold))
+                                Text("\(slab.company.rawValue) \(gradeLabel(slab.grade))\(slab.slabLabel == .universal ? "" : " " + CopyGroup.shortLabel(slab.slabLabel))")
+                                    .font(.subheadline.weight(.semibold))
                                 Spacer()
                                 Text("\(slab.count) sale\(slab.count == 1 ? "" : "s")").font(.caption).foregroundStyle(Theme.tertiary)
                                 Text(formatCents(slab.cents)).font(.subheadline.weight(.bold)).monospacedDigit()
@@ -234,11 +276,34 @@ struct ComicDetailView: View {
     private var yourCopy: some View {
         section(title: "Your copy") {
             CentsField(title: "You paid", cents: $record.purchaseCents)
+            DatePicker("Bought on", selection: Binding(get: { record.purchaseDate ?? record.scannedAt },
+                                                      set: { record.purchaseDate = $0 }),
+                       displayedComponents: .date)
+                .font(.subheadline)
+                .foregroundStyle(Theme.secondary)
+            if let profit = record.profitCents {
+                HStack {
+                    Text("Profit / loss").font(.subheadline).foregroundStyle(Theme.secondary)
+                    Spacer()
+                    Text("\(profit >= 0 ? "+" : "−")\(formatCents(abs(profit)))\(record.profitPercent.map { String(format: " (%@%.0f%%)", $0 >= 0 ? "+" : "", $0) } ?? "")")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(profit >= 0 ? Theme.good : Theme.accent)
+                }
+            }
             CentsField(title: "Your price (overrides market)", cents: $record.manualValueCents)
             row("Scanned", record.scannedAt.formatted(date: .abbreviated, time: .shortened))
             TextField("Notes", text: $record.notes, axis: .vertical)
                 .font(.subheadline)
         }
+    }
+
+    private func summaryTile(_ title: String, _ value: String, detail: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(Theme.tertiary)
+            Text(value).font(.subheadline.weight(.bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+            if let detail { Text(detail).font(.caption2).foregroundStyle(Theme.tertiary) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -269,7 +334,7 @@ struct ComicDetailView: View {
         refreshError = nil
         defer { refreshing = false }
         do {
-            let valuation = try await PricingService.valuation(for: record.spec, bot: bot, forceRefresh: true)
+            let valuation = try await PricingService.valuation(for: record.spec, bot: bot, context: modelContext, forceRefresh: true)
             record.setValuation(valuation)
         } catch {
             if !error.isCancellation { refreshError = error.localizedDescription }
@@ -287,7 +352,7 @@ struct SaleRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(listing.title).font(.caption).lineLimit(2)
                 HStack(spacing: 6) {
-                    Text(sale.kind.label)
+                    Text(sale.kindLabel)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(sale.kind.isGraded ? Theme.caution : Theme.good)
                     if let date = listing.soldDate {

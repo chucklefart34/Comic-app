@@ -25,6 +25,8 @@ final class ComicRecord {
     var pricedAt: Date?
     var inCollection: Bool
     var notes: String
+    // Added in 1.1.
+    var purchaseDate: Date?
 
     init(spec: ComicSpec, imageURL: String?, thumbnail: Data?) {
         self.ref = UUID()
@@ -79,6 +81,22 @@ final class ComicRecord {
     var displayValueCents: Int? { manualValueCents ?? valueCents }
 
     var confidence: Confidence? { confidenceRaw.flatMap(Confidence.init(rawValue:)) }
+
+    /// Market value minus what you paid (nil until both are known). Purchase prices are never changed by updates.
+    var profitCents: Int? {
+        guard let value = displayValueCents, let paid = purchaseCents else { return nil }
+        return value - paid
+    }
+
+    var profitPercent: Double? {
+        guard let profit = profitCents, let paid = purchaseCents, paid > 0 else { return nil }
+        return Double(profit) / Double(paid) * 100
+    }
+
+    var isStale: Bool {
+        guard let pricedAt else { return true }
+        return Date().timeIntervalSince(pricedAt) > PricingService.staleAfter
+    }
 
     var displayTitle: String { issue.isEmpty ? title : "\(title) #\(issue)" }
 

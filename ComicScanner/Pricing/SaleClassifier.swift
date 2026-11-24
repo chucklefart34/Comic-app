@@ -12,13 +12,47 @@ enum SaleKind: Codable, Hashable {
         return false
     }
 
+    var grade: Double? {
+        switch self {
+        case .raw(let grade), .graded(_, let grade): return grade
+        }
+    }
+
+    var company: GradingCompany? {
+        if case .graded(let company, _) = self { return company }
+        return nil
+    }
+}
+
+/// Which price group a sale belongs to. Different groups are never averaged together.
+enum CopyGroup: Hashable, Codable, Identifiable {
+    case raw
+    case rawSigned
+    case slab(GradingCompany, SlabLabel)
+
+    var id: String { label }
+
     var label: String {
         switch self {
-        case .raw(let grade?): return "Raw \(gradeLabel(grade))"
-        case .raw(nil): return "Raw · grade not stated"
-        case .graded(let company, let grade?): return "\(company.rawValue) \(gradeLabel(grade))"
-        case .graded(let company, nil): return "\(company.rawValue) slab"
+        case .raw: return "Raw"
+        case .rawSigned: return "Raw · signed"
+        case .slab(let company, let label): return "\(company.rawValue) \(Self.shortLabel(label))"
         }
+    }
+
+    static func shortLabel(_ label: SlabLabel) -> String {
+        switch label {
+        case .universal: return "Universal"
+        case .signatureSeries: return "Signature Series"
+        case .qualified: return "Qualified"
+        case .restored: return "Restored"
+        }
+    }
+
+    /// The group an owned copy belongs to.
+    static func of(_ spec: ComicSpec) -> CopyGroup {
+        if spec.graded { return .slab(spec.company, spec.signed && spec.label == .universal ? .signatureSeries : spec.label) }
+        return spec.signed ? .rawSigned : .raw
     }
 }
 
@@ -26,11 +60,35 @@ enum SaleKind: Codable, Hashable {
 struct ClassifiedSale: Codable, Hashable, Identifiable {
     let listing: SoldListing
     let kind: SaleKind
-    /// Why it isn't counted (nil when it is).
+    /// Why it isn't this edition (nil when it is).
     var excludedReason: String?
+    // Added in 1.1 (optional so older saved prices still load).
+    var signed: Bool?
+    var label: SlabLabel?
+    /// 0…1: how sure the match is. Below 0.7 is flagged for review.
+    var confidence: Double?
+    /// Your decision: true = approved, false = rejected, nil = automatic.
+    var review: Bool?
 
     var id: String { listing.id }
     var counted: Bool { excludedReason == nil }
+    var needsReview: Bool { counted && review == nil && (confidence ?? 1) < 0.7 }
+
+    var group: CopyGroup {
+        switch kind {
+        case .raw: return signed == true ? .rawSigned : .raw
+        case .graded(let company, _): return .slab(company, label ?? .universal)
+        }
+    }
+
+    var kindLabel: String {
+        switch kind {
+        case .raw(let grade?): return "\(group.label) \(gradeLabel(grade))"
+        case .raw(nil): return "\(group.label) · grade not stated"
+        case .graded(_, let grade?): return "\(group.label) \(gradeLabel(grade))"
+        case .graded: return "\(group.label) · grade not stated"
+        }
+    }
 }
 
 enum SaleClassifier {
@@ -61,30 +119,44 @@ enum SaleClassifier {
         return nil
     }
 
-    /// Classifies every listing: same edition or not, raw or slabbed, and at what grade.
-    static func classify(_ listings: [SoldListing], spec: ComicSpec, options: CompOptions, ignoreCover: Bool = false) -> [ClassifiedSale] {
+    /// Slab label from the title.
+    static func slabLabel(traits: TitleTraits) -> SlabLabel {
+        if traits.restored { return .restored }
+        if traits.qualified { return .qualified }
+        if traits.signed { return .signatureSeries }
+        return .universal
+    }
+
+    /// Classifies every listing: same edition or not, raw or slabbed, label, grade, and how sure the match is.
+    /// `reviews` are your saved approve (true) / reject (false) decisions by listing ID.
+    static func classify(_ listings: [SoldListing], spec: ComicSpec, options: CompOptions,
+                         ignoreCover: Bool = false, reviews: [String: Bool] = [:]) -> [ClassifiedSale] {
         listings.map { listing in
             let traits = TitleTraits(title: listing.title)
             let kind: SaleKind = traits.company.map { .graded(company: $0, grade: traits.grade) }
                 ?? .raw(grade: rawGrade(in: listing.title))
-            return ClassifiedSale(listing: listing, kind: kind,
-                                  excludedReason: editionMismatch(listing, traits: traits, spec: spec, options: options, ignoreCover: ignoreCover))
+            var reason = editionMismatch(listing, traits: traits, spec: spec, options: options, ignoreCover: ignoreCover)
+            let review = reviews[listing.id]
+            if review == true { reason = nil }
+            if review == false { reason = "Rejected by you" }
+            return ClassifiedSale(listing: listing, kind: kind, excludedReason: reason,
+                                  signed: traits.signed,
+                                  label: kind.isGraded ? slabLabel(traits: traits) : nil,
+                                  confidence: reason == nil ? matchConfidence(listing, traits: traits, kind: kind, spec: spec) : 0,
+                                  review: review)
         }
     }
 
-    /// Everything that makes a sale a different book or an unusable comp (grade aside).
+    /// Everything that makes a sale a different book (edition, printing, cover, signer) or unusable.
+    /// Raw vs slab, company, label and grade are NOT reasons — those become separate price groups.
     static func editionMismatch(_ listing: SoldListing, traits: TitleTraits, spec: ComicSpec, options: CompOptions, ignoreCover: Bool = false) -> String? {
         let title = TitleTraits.normalize(listing.title)
         if traits.lot { return "Lot or more than one book" }
         if traits.reprint && !spec.mentionsReprint { return "Facsimile or reprint" }
         if !CompMatcher.issueMatches(spec.issue, in: title) { return "Different issue number" }
-        if traits.qualified || traits.restored { return traits.restored ? "Restored copy" : "Qualified (green) label" }
 
-        if spec.signed {
-            if !traits.signed { return "Not signed" }
-            if let last = spec.signerLastName, !title.contains(last) { return "Different or unnamed signer" }
-        } else if traits.signed {
-            return "Signed copy"
+        if spec.signed, traits.signed, let last = spec.signerLastName, !title.contains(last) {
+            return "Signed by someone else"
         }
 
         if ignoreCover {
@@ -97,6 +169,10 @@ enum SaleClassifier {
             }
         }
 
+        let newsstand = matches(#"\bnewsstand\b"#, title)
+        if spec.printEdition == .newsstand && !newsstand { return "Not a newsstand copy" }
+        if spec.printEdition == .direct && newsstand { return "Newsstand copy" }
+
         if spec.printing <= 1 {
             if let printing = traits.laterPrinting { return "\(ordinal(printing)) printing" }
         } else if traits.laterPrinting != spec.printing {
@@ -106,6 +182,38 @@ enum SaleClassifier {
         if listing.bestOffer && !options.includeBestOffer {
             return "Best Offer — real price hidden"
         }
+        if listing.priceCents < 100 { return "Under $1 — likely not a real sale" }
         return nil
+    }
+
+    /// How sure we are that a same-edition sale really is this book (0…1).
+    static func matchConfidence(_ listing: SoldListing, traits: TitleTraits, kind: SaleKind, spec: ComicSpec) -> Double {
+        let title = TitleTraits.normalize(listing.title)
+        var score = 1.0
+
+        // Title words: how many of the series' words the listing contains.
+        let words = spec.searchTitle.lowercased().split(separator: " ").map(String.init).filter { $0.count > 2 }
+        if !words.isEmpty {
+            let present = words.filter { title.contains($0) }.count
+            score -= 0.4 * (1 - Double(present) / Double(words.count))
+        }
+        // "#300" is clearer than a bare "300".
+        if !spec.searchIssue.isEmpty, !matches(#"#\s?0*"# + NSRegularExpression.escapedPattern(for: spec.searchIssue) + #"(?!\d)"#, title) {
+            score -= 0.1
+        }
+        // Several issue numbers in one title ("#299 #300") might be a mislabeled lot.
+        let issueMentions = (try? NSRegularExpression(pattern: #"#\s?\d+"#))?
+            .numberOfMatches(in: title, range: NSRange(title.startIndex..., in: title)) ?? 0
+        if issueMentions > 1 { score -= 0.25 }
+        // A slab without a stated grade can't be placed in a grade.
+        if kind.isGraded && kind.grade == nil { score -= 0.2 }
+        // Words that often mean "not the book itself".
+        if matches(#"\b(poster|art print|cover only|coverless|no cover|incomplete|missing pages|pages only|statue|figure|t-shirt|sticker)\b"#, title) {
+            score -= 0.4
+        }
+        if matches(#"\b(damaged|water damage|torn|detached)\b"#, title) { score -= 0.15 }
+        if listing.soldDate == nil { score -= 0.1 }
+        if listing.bestOffer { score -= 0.1 }
+        return max(0.05, min(1, score))
     }
 }

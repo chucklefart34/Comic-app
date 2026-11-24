@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 /// A place prices can come from. New providers can be added here without touching the rest of the app.
 protocol PricingProvider {
@@ -110,6 +111,9 @@ enum PricingService {
 
     static func clearCache() { cache.removeAll() }
 
+    /// Keeps a locally recalculated valuation (e.g. after you approve or reject a sale).
+    static func remember(_ valuation: Valuation, for spec: ComicSpec) { cache[cacheKey(spec)] = valuation }
+
     private static func narrowListings(for spec: ComicSpec, bot: WebBot) async -> [SoldListing] {
         guard let variantQuery = spec.variantQuery else { return [] }
         return (try? await EbaySoldSearch.soldListings(query: variantQuery, bot: bot, comicsOnly: Prefs.searchComicsOnly)) ?? []
@@ -121,15 +125,26 @@ enum PricingService {
         return try? await priceCharting.guide(for: spec)
     }
 
-    static func valuation(for spec: ComicSpec, bot: WebBot, forceRefresh: Bool = false) async throws -> Valuation {
+    /// Values an edition. With a `context`, every matching sale is stored (so history builds up past eBay's ~90 days),
+    /// your approve/reject decisions are applied, the lookup is logged, and the day's value is saved for trends.
+    static func valuation(for spec: ComicSpec, bot: WebBot, context: ModelContext? = nil, forceRefresh: Bool = false) async throws -> Valuation {
         let key = cacheKey(spec)
         if !forceRefresh, let hit = cache[key], Date().timeIntervalSince(hit.updatedAt) < freshFor { return hit }
+        let options = Prefs.compOptions
+        let reviews = context.map { SalesStore.reviews(for: spec, context: $0) } ?? [:]
+        let stored = context.map { SalesStore.storedSales(for: spec, context: $0).map(\.listing) } ?? []
+
         guard NetworkMonitor.shared.isOnline else {
             if let hit = cache[key] { return hit }
+            if !stored.isEmpty {
+                // Offline: value from sales saved earlier.
+                var offline = PricingEngine.valuation(spec: spec, listings: stored, sources: [], options: options, reviews: reviews)
+                offline.sources = [SourceNote(name: "Saved sales", detail: "Offline — \(stored.count) sales saved on this phone", used: true)]
+                return offline
+            }
             throw ServiceError.offline
         }
 
-        let options = Prefs.compOptions
         var sources: [SourceNote] = []
 
         // eBay: a wide search for this issue (prefetched while you confirmed the cover, if possible),
@@ -137,41 +152,60 @@ enum PricingService {
         async let narrowSearch = narrowListings(for: spec, bot: bot)
         async let guideLookup = guideData(for: spec)
 
-        var listings: [SoldListing] = []
+        var fetched: [SoldListing] = []
         var wideError: Error?
-        if let prefetched = SoldCache.shared.results(for: spec), let pool = try? await prefetched.value {
-            listings = pool
+        if !forceRefresh, let prefetched = SoldCache.shared.results(for: spec), let pool = try? await prefetched.value {
+            fetched = pool
         } else {
             do {
-                listings = try await EbaySoldSearch.soldListings(query: spec.broadQuery, bot: bot, comicsOnly: Prefs.searchComicsOnly)
+                fetched = try await EbaySoldSearch.soldListings(query: spec.broadQuery, bot: bot, comicsOnly: Prefs.searchComicsOnly)
             } catch {
                 wideError = error
             }
         }
-        listings = merge(listings, await narrowSearch)
+        let wideDiagnostics = EbayPages.last
+        fetched = merge(fetched, await narrowSearch)
         let guide = await guideLookup
+
+        // Store the sales that are this edition (any condition), and log the import.
+        if let context {
+            let sameEdition = SaleClassifier.classify(fetched, spec: spec, options: CompOptions(includeShipping: true, includeBestOffer: true))
+                .filter { $0.excludedReason == nil }.map(\.listing)
+            let saved = SalesStore.save(sameEdition, for: spec, context: context)
+            var diagnostics = wideDiagnostics
+            diagnostics.listingsRead = fetched.count
+            if let wideError, fetched.isEmpty { diagnostics.error = wideError.localizedDescription }
+            SalesStore.log(spec: spec, diagnostics: diagnostics, new: saved.new, duplicates: saved.duplicates, context: context)
+        }
+
+        let listings = merge(fetched, stored)
         if listings.isEmpty, guide == nil, let wideError { throw wideError }
 
-        var result = PricingEngine.valuation(spec: spec, listings: listings, guide: guide, sources: [], options: options)
+        var result = PricingEngine.valuation(spec: spec, listings: listings, guide: guide, sources: [], options: options, reviews: reviews)
 
         // Nothing mentions this exact cover → use every cover of the issue, labelled as an estimate.
         if !result.hasAnyPrice, !listings.isEmpty, !(spec.variant.isEmpty && spec.exclusive.isEmpty) {
-            let relaxed = PricingEngine.valuation(spec: spec, listings: listings, guide: guide, sources: [], options: options, ignoreCover: true)
+            let relaxed = PricingEngine.valuation(spec: spec, listings: listings, guide: guide, sources: [], options: options,
+                                                  ignoreCover: true, reviews: reviews)
             if relaxed.hasAnyPrice { result = relaxed }
         }
 
         // No sales of this issue at all → look at the rest of the series for an estimate.
         if !result.hasAnyPrice, !spec.title.trimmed.isEmpty,
            let series = try? await EbaySoldSearch.soldListings(query: spec.seriesQuery, bot: bot, comicsOnly: Prefs.searchComicsOnly) {
-            result = PricingEngine.valuation(spec: spec, listings: listings, seriesListings: series, guide: guide, sources: [], options: options)
+            result = PricingEngine.valuation(spec: spec, listings: listings, seriesListings: series, guide: guide, sources: [],
+                                             options: options, reviews: reviews)
         }
 
         let counted = result.sales.filter(\.counted).count
         sources.append(SourceNote(name: "eBay sold listings",
                                   detail: listings.isEmpty
                                       ? "No sold listings found for \"\(spec.broadQuery)\""
-                                      : "\(counted) matching sales of \(listings.count) checked · completed sales only",
+                                      : "\(counted) matching sales of \(listings.count) checked · completed sales only · USD",
                                   used: counted > 0))
+        if !stored.isEmpty {
+            sources.append(SourceNote(name: "Saved sales", detail: "\(stored.count) sales of this edition saved on this phone from earlier lookups", used: true))
+        }
         if let guide {
             sources.append(SourceNote(name: guide.source, detail: "Price guide values (supporting)", used: true))
         }
@@ -181,6 +215,10 @@ enum PricingService {
         result.sources = sources
 
         cache[key] = result
+        if let context { SalesStore.snapshot(result, spec: spec, context: context) }
         return result
     }
+
+    /// Valuations older than this are flagged as stale and refreshed when opened.
+    static let staleAfter: TimeInterval = 7 * 86_400
 }

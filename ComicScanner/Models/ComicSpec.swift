@@ -18,6 +18,15 @@ enum SlabLabel: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Direct (comic shop) vs newsstand edition. They're priced separately when known.
+enum PrintEdition: String, CaseIterable, Codable, Identifiable {
+    case any = "Not specified"
+    case direct = "Direct edition"
+    case newsstand = "Newsstand edition"
+
+    var id: String { rawValue }
+}
+
 enum SignatureProof: String, CaseIterable, Codable, Identifiable {
     case none = "Not authenticated"
     case coa = "COA / witnessed (JSA, Beckett, PSA/DNA…)"
@@ -41,6 +50,7 @@ struct ComicSpec: Codable, Hashable {
     var exclusive = ""
     var printing = 1
     var isReprint = false
+    var printEdition: PrintEdition = .any
 
     // Credits and key info
     var writer = ""
@@ -83,9 +93,9 @@ struct ComicSpec: Codable, Hashable {
 
     /// Same book regardless of grade/signature: used for caching prices and learned covers.
     var editionKey: String {
-        [title, issue, variant, exclusive, String(printing)]
-            .map { $0.trimmed.lowercased() }
-            .joined(separator: "|")
+        var parts = [title, issue, variant, exclusive, String(printing)].map { $0.trimmed.lowercased() }
+        if printEdition != .any { parts.append(printEdition == .newsstand ? "newsstand" : "direct") }
+        return parts.joined(separator: "|")
     }
 
     // MARK: Display
@@ -111,6 +121,8 @@ struct ComicSpec: Codable, Hashable {
         if !variant.trimmed.isEmpty { parts.append(variant.trimmed) } else { parts.append("Regular cover") }
         if !exclusive.trimmed.isEmpty { parts.append("\(exclusive.trimmed) exclusive") }
         if printing > 1 { parts.append("\(ordinal(printing)) printing") }
+        if printEdition == .newsstand { parts.append("Newsstand") }
+        if printEdition == .direct { parts.append("Direct") }
         if isReprint { parts.append("Reprint") }
         return parts.joined(separator: " · ")
     }
@@ -183,7 +195,7 @@ struct ComicSpec: Codable, Hashable {
 // Lenient decoding, so saved comics survive new fields being added.
 extension ComicSpec {
     enum CodingKeys: String, CodingKey {
-        case title, issue, year, publisher, volume, releaseDate, variant, exclusive, printing, isReprint
+        case title, issue, year, publisher, volume, releaseDate, variant, exclusive, printing, isReprint, printEdition
         case writer, coverArtist, keyNotes, variantCount
         case signed, signer, signatureProof, graded, company, grade, label, pageQuality, certNumber
         case upc, isbn, notes, coverImageURL, verseDBIssueID, verseDBVariantID, customQuery
@@ -202,6 +214,7 @@ extension ComicSpec {
         exclusive = (try? c.decodeIfPresent(String.self, forKey: .exclusive)) ?? ""
         printing = (try? c.decodeIfPresent(Int.self, forKey: .printing)) ?? 1
         isReprint = (try? c.decodeIfPresent(Bool.self, forKey: .isReprint)) ?? false
+        printEdition = (try? c.decodeIfPresent(PrintEdition.self, forKey: .printEdition)) ?? .any
         writer = (try? c.decodeIfPresent(String.self, forKey: .writer)) ?? ""
         coverArtist = (try? c.decodeIfPresent(String.self, forKey: .coverArtist)) ?? ""
         keyNotes = (try? c.decodeIfPresent([String].self, forKey: .keyNotes)) ?? []

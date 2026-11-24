@@ -6,11 +6,27 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		C5A1000000000000000001C3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C5A1000000000000000000D0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C5A1000000000000000000C1;
+			remoteInfo = ComicScanner;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		C5A1000000000000000001A4 /* ComicScannerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ComicScannerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C5A1000000000000000000A4 /* ComicScanner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ComicScanner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		C5A1000000000000000001A3 /* ComicScannerTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ComicScannerTests;
+			sourceTree = "<group>";
+		};
 		C5A1000000000000000000A3 /* ComicScanner */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = ComicScanner;
@@ -19,6 +35,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		C5A1000000000000000001B1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C5A1000000000000000000B1 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				C5A1000000000000000000A3 /* ComicScanner */,
+				C5A1000000000000000001A3 /* ComicScannerTests */,
 				C5A1000000000000000000A2 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				C5A1000000000000000000A4 /* ComicScanner.app */,
+				C5A1000000000000000001A4 /* ComicScannerTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,6 +73,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		C5A1000000000000000001C1 /* ComicScannerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C5A1000000000000000001E2 /* Build configuration list for PBXNativeTarget "ComicScannerTests" */;
+			buildPhases = (
+				C5A1000000000000000001B0 /* Sources */,
+				C5A1000000000000000001B1 /* Frameworks */,
+				C5A1000000000000000001B2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C5A1000000000000000001C2 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				C5A1000000000000000001A3 /* ComicScannerTests */,
+			);
+			name = ComicScannerTests;
+			packageProductDependencies = (
+			);
+			productName = ComicScannerTests;
+			productReference = C5A1000000000000000001A4 /* ComicScannerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		C5A1000000000000000000C1 /* ComicScanner */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = C5A1000000000000000000E2 /* Build configuration list for PBXNativeTarget "ComicScanner" */;
@@ -83,6 +131,10 @@
 					C5A1000000000000000000C1 = {
 						CreatedOnToolsVersion = 16.0;
 					};
+					C5A1000000000000000001C1 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = C5A1000000000000000000C1;
+					};
 				};
 			};
 			buildConfigurationList = C5A1000000000000000000E1 /* Build configuration list for PBXProject "ComicScanner" */;
@@ -100,11 +152,19 @@
 			projectRoot = "";
 			targets = (
 				C5A1000000000000000000C1 /* ComicScanner */,
+				C5A1000000000000000001C1 /* ComicScannerTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		C5A1000000000000000001B2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C5A1000000000000000000B2 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -115,6 +175,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		C5A1000000000000000001B0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C5A1000000000000000000B0 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -123,6 +190,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C5A1000000000000000001C2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C5A1000000000000000000C1 /* ComicScanner */;
+			targetProxy = C5A1000000000000000001C3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		C5A1000000000000000000F1 /* Debug */ = {
@@ -244,6 +319,44 @@
 			};
 			name = Release;
 		};
+		C5A1000000000000000001F3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.ComicScannerTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ComicScanner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ComicScanner";
+			};
+			name = Debug;
+		};
+		C5A1000000000000000001F4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.ComicScannerTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ComicScanner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ComicScanner";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -261,6 +374,15 @@
 			buildConfigurations = (
 				C5A1000000000000000000F3 /* Debug */,
 				C5A1000000000000000000F4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C5A1000000000000000001E2 /* Build configuration list for PBXNativeTarget "ComicScannerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C5A1000000000000000001F3 /* Debug */,
+				C5A1000000000000000001F4 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
