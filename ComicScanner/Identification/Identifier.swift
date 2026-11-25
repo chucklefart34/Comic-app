@@ -64,7 +64,7 @@ enum Identifier {
                 if spec.upc.isEmpty { spec.upc = code }
                 return spec
             }
-            let list = specs.map { Candidate(spec: $0, imageURL: nil, source: "Catalog") }
+            let list = specs.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "Catalog") }
             return Identification(candidates: list, confident: list.count == 1, method: "Barcode", photo: photo, barcode: barcode)
         }
 
@@ -160,7 +160,16 @@ enum Identifier {
         let catalogHits = await ComicCatalog.shared.match(coverText: text.lines, issue: text.issue)
         var catalogAgrees = false
         if !catalogHits.isEmpty {
+            // The catalog's own cover scans (variants too), compared with your photo.
+            let withCovers = catalogHits.filter { !$0.cover.isEmpty }.prefix(10)
+                .map { Candidate(spec: $0.spec, imageURL: $0.cover, source: "Catalog") }
+            let lookedAt = withCovers.isEmpty ? [] : await rankByLook(Array(withCovers), photo: cover)
             (candidates, catalogAgrees) = applyCatalog(catalogHits, to: candidates)
+            candidates = ranked(lookedAt + candidates)
+            // The closest look-alike is a catalog cover of the series and issue printed on it: that's the one.
+            if let top = candidates.first, top.source == "Catalog", (top.distance ?? 1) < goodEnough {
+                catalogAgrees = true
+            }
         }
 
         // 4. VerseDB only when nothing close was found (its free plan has a request limit).
@@ -227,7 +236,7 @@ enum Identifier {
         }
         // The catalog's own editions, for picking by hand (no picture of their own).
         let known = Set(candidates.map(\.spec.editionKey))
-        let extras = hits.prefix(8).map { Candidate(spec: $0.spec, imageURL: nil, source: "Catalog") }
+        let extras = hits.prefix(8).map { Candidate(spec: $0.spec, imageURL: $0.cover.nilIfEmpty, source: "Catalog") }
             .filter { !known.contains($0.spec.editionKey) }
         if candidates.isEmpty, let first = extras.first {
             // Nothing to compare by look: the catalog's regular edition is the best guess.

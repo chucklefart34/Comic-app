@@ -51,6 +51,9 @@ struct SettingsScreen: View {
                         if let barcodes = info.with_barcode {
                             LabeledContent("With barcodes", value: barcodes.formatted())
                         }
+                        if let covers = info.with_cover {
+                            LabeledContent("With cover pictures", value: covers.formatted())
+                        }
                         LabeledContent("Updated", value: info.built)
                     } else {
                         Text("Not downloaded yet").foregroundStyle(Theme.secondary)
@@ -70,7 +73,7 @@ struct SettingsScreen: View {
                 } header: {
                     Text("Comic catalog (\((catalogInfo?.publishers ?? ["Marvel", "DC"]).joined(separator: " & ")))")
                 } footer: {
-                    Text("Every issue, variant and barcode, on your phone. Barcodes are matched instantly and covers are checked against the series and issue printed on them, with no request limits. Updated monthly. \(ComicCatalog.credit)")
+                    Text("Every issue, variant and barcode, on your phone, with cover pictures added a batch at a time. Barcodes are matched instantly; covers are matched to the series and issue printed on them and compared with the real cover. New books are added every Thursday. \(ComicCatalog.credit)")
                 }
 
                 Section {

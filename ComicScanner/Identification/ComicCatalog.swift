@@ -13,6 +13,8 @@ struct CatalogIssue: Hashable, Identifiable {
     let parentID: Int?
     let barcode: String
     let keyDate: String
+    /// Link to the GCD cover scan (empty until the weekly job has reached this series).
+    var cover: String = ""
 
     var isVariant: Bool { parentID != nil }
 
@@ -25,6 +27,7 @@ struct CatalogIssue: Hashable, Identifiable {
         let year = String(keyDate.prefix(4))
         spec.year = Int(year) != nil ? year : seriesYear.map(String.init) ?? ""
         spec.upc = barcode
+        spec.coverImageURL = cover
         var name = variant
         let lower = name.lowercased()
         if lower.contains("newsstand") {
@@ -61,6 +64,7 @@ actor ComicCatalog {
         var issues: Int
         var variants: Int?
         var with_barcode: Int?
+        var with_cover: Int?
         var publishers: [String]?
         var credit: String?
     }
@@ -97,10 +101,16 @@ actor ComicCatalog {
 
     // MARK: Download
 
-    /// Downloads the catalog if it's missing or more than a month old. Quiet: failures just leave the old one.
+    /// Downloads the catalog if it's missing or a week old (it's rebuilt every Thursday).
+    /// Quiet: failures just leave the old one.
     func updateIfNeeded() async {
+        let checkedKey = "catalogCheckedAt"
         if let info = Self.installedInfo(), let built = Self.date(info.built),
-           Date().timeIntervalSince(built) < 35 * 86_400 { return }
+           Date().timeIntervalSince(built) < 7 * 86_400 { return }
+        // Don't keep re-downloading the same file when a weekly build hasn't happened yet.
+        if let checked = UserDefaults.standard.object(forKey: checkedKey) as? Date,
+           Date().timeIntervalSince(checked) < 86_400, Self.installedInfo() != nil { return }
+        UserDefaults.standard.set(Date(), forKey: checkedKey)
         _ = try? await update()
     }
 
@@ -211,6 +221,23 @@ actor ComicCatalog {
         if let db { sqlite3_close(db) }
         db = nil
         seriesIndex = nil
+        coverColumn = nil
+    }
+
+    private var coverColumn: Bool?
+    /// Catalogs from before cover links were added don't have the column.
+    private var hasCoverColumn: Bool {
+        if let coverColumn { return coverColumn }
+        var statement: OpaquePointer?
+        var found = false
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(issue)", -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let name = sqlite3_column_text(statement, 1), String(cString: name) == "cover" { found = true }
+            }
+        }
+        sqlite3_finalize(statement)
+        coverColumn = found
+        return found
     }
 
     private func loadSeriesIndex() -> [(id: Int, words: [String], compact: String)] {
@@ -233,7 +260,8 @@ actor ComicCatalog {
 
     private func query(_ condition: String, _ arguments: [String]) -> [CatalogIssue] {
         let sql = """
-        SELECT i.id, i.series_id, s.name, s.publisher, s.year_began, i.number, i.variant, i.parent_id, i.barcode, i.key_date
+        SELECT i.id, i.series_id, s.name, s.publisher, s.year_began, i.number, i.variant, i.parent_id, i.barcode, i.key_date,
+               \(hasCoverColumn ? "i.cover" : "''")
         FROM issue i JOIN series s ON s.id = i.series_id WHERE \(condition.replacingOccurrences(of: "barcode", with: "i.barcode")) LIMIT 60
         """
         var statement: OpaquePointer?
@@ -258,7 +286,8 @@ actor ComicCatalog {
                 variant: text(6),
                 parentID: sqlite3_column_type(statement, 7) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(statement, 7)),
                 barcode: text(8),
-                keyDate: text(9)
+                keyDate: text(9),
+                cover: text(10)
             ))
         }
         return rows

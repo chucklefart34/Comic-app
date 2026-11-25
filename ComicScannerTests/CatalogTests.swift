@@ -21,6 +21,8 @@ final class CatalogTests: XCTestCase {
         INSERT INTO issue VALUES (4, 200, '1', 1, 'Jim Lee 1:100', 3, '76194131846700121', '2013-11-00', '3.99 USD');
         INSERT INTO issue VALUES (5, 210, '1', 1, '', NULL, '', '1987-02-00', '0.75 USD');
         INSERT INTO issue VALUES (6, 110, '1', 1, '', NULL, '75960608936800111', '2018-09-00', '5.99 USD');
+        ALTER TABLE issue ADD COLUMN cover TEXT NOT NULL DEFAULT '';
+        UPDATE issue SET cover = 'https://files1.comics.org/img/gcd/covers_by_id/1/w400/3.jpg' WHERE id = 3;
         """
         XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
         sqlite3_close(db)
@@ -37,6 +39,7 @@ final class CatalogTests: XCTestCase {
         XCTAssertEqual(regular.first?.spec.title, "Superman/Wonder Woman")
         XCTAssertEqual(regular.first?.spec.publisher, "DC Comics")
         XCTAssertEqual(regular.first?.spec.year, "2013")
+        XCTAssertEqual(regular.first?.spec.coverImageURL, "https://files1.comics.org/img/gcd/covers_by_id/1/w400/3.jpg")
 
         let variant = await catalog.issues(barcode: "76194131846700121")
         XCTAssertEqual(variant.first?.spec.variant, "Jim Lee 1:100")

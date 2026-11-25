@@ -65,24 +65,31 @@ Tokens are added in Settings and stored in the iPhone Keychain. Nothing is hard-
 
 ## Offline comic catalog (Marvel & DC)
 
-Every Marvel and DC issue, variant and barcode lives on the phone, so most books are identified without
-VerseDB or any request limit:
+Every Marvel and DC issue, variant and barcode lives on the phone, with links to their cover scans, so most
+books are identified without VerseDB or any request limit:
 
 - **Barcodes** are matched against the catalog instantly — exact issue, cover and printing.
-- **Covers**: the series and issue number printed on the cover are looked up in the catalog, and the eBay
-  look-alike that agrees with it is accepted. VerseDB is only asked about books the catalog doesn't know.
+- **Covers**: the series and issue number printed on the cover are looked up in the catalog, and your photo is
+  compared with the catalog's cover scans for that issue (variants included) and with eBay photos. VerseDB is
+  only asked about books the catalog doesn't know.
 
-The catalog is built by the **Build comic catalog** workflow (`.github/workflows/catalog.yml`,
-`scripts/build_catalog.py`) from the Grand Comics Database data dump, on the 3rd of every month, and
-published to the `catalog` release. The app downloads it on first launch and when it's a month old
-(Settings → Comic catalog → Update now).
+The **Build comic catalog** workflow (`.github/workflows/catalog.yml`, `scripts/catalog.py`) runs every
+Thursday:
+
+- adds new and upcoming issues (with variants, barcodes and cover links) from comics.org's weekly on-sale list;
+- fills in cover links for older series, about 1,400 comics.org requests a week (their limit for a free account
+  is 25 a minute, 2,000 a day), newest series first, until every series has them;
+- once every four weeks, rebuilds everything from the full GCD data dump, keeping the cover links already found.
+
+It publishes to the `catalog` release; the app downloads it when it's a week old (Settings → Comic catalog →
+Update now). Only cover *links* are stored — the phone loads a cover picture only when a scan needs it.
 
 Setup (once): make a free account at comics.org, then in this repo go to Settings → Secrets and variables →
 Actions and add `GCD_EMAIL` and `GCD_PASSWORD`. Then run the workflow from the Actions tab. More publishers can be
 added when running it by hand (e.g. `Marvel,DC,Image,Dark Horse`).
 
 Catalog data from the [Grand Comics Database™](https://www.comics.org), licensed
-[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). No GCD cover images are copied.
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
 ## Internal pricing API
 

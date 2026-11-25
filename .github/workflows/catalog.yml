@@ -1,85 +1,118 @@
 name: Build comic catalog
 
-# Downloads the Grand Comics Database dump (needs a free comics.org account) and builds the app's
-# offline Marvel & DC catalog. Runs on the 3rd of each month, or by hand from the Actions tab.
+# Weekly (Thursdays, after new comics come out on Wednesday):
+#   - adds new and upcoming Marvel & DC issues, variants, barcodes and cover links from comics.org
+#   - fills in cover links for older series, a batch each week (newest series first)
+#   - once a month rebuilds everything from the full Grand Comics Database dump, keeping the cover links
+# Needs the repo secrets GCD_EMAIL and GCD_PASSWORD (a free comics.org account).
 on:
   schedule:
-    - cron: "17 9 3 * *"
+    - cron: "17 14 * * 4"
   workflow_dispatch:
     inputs:
+      full:
+        description: "Rebuild from the full GCD dump now"
+        type: boolean
+        default: false
+      cover_budget:
+        description: "comics.org requests to spend on cover links this run (their limit is 2,000 a day)"
+        default: "1400"
       publishers:
-        description: "Publishers to include (GCD names, comma separated)"
+        description: "Publishers (GCD names, comma separated)"
         default: "Marvel,DC"
 
 permissions:
   contents: write
 
+concurrency:
+  group: catalog
+  cancel-in-progress: false
+
 jobs:
   catalog:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
+    env:
+      GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
+      GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
+      CATALOG_PUBLISHERS: ${{ github.event.inputs.publishers || 'Marvel,DC' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Check comics.org login is set
-        env:
-          GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
-          GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
         run: |
           if [ -z "$GCD_EMAIL" ] || [ -z "$GCD_PASSWORD" ]; then
             echo "::error::Add GCD_EMAIL and GCD_PASSWORD under Settings → Secrets and variables → Actions."
             exit 1
           fi
 
-      - name: Download the GCD SQLite dump
-        env:
-          GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
-          GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
+      - name: Get last week's catalog
+        id: previous
+        run: |
+          mkdir -p work out
+          URL="https://github.com/${{ github.repository }}/releases/download/catalog/catalog.sqlite.deflate"
+          if curl -sSfL "$URL" -o work/previous.deflate; then
+            python3 scripts/catalog.py unpack work/previous.deflate work/previous.sqlite
+            FULL_BUILT=$(python3 -c "import sqlite3;print((sqlite3.connect('work/previous.sqlite').execute(\"select value from meta where key='full_built'\").fetchone() or [''])[0])")
+            echo "Last full build: ${FULL_BUILT:-never}"
+            AGE=$(python3 -c "import datetime as d,sys;s='$FULL_BUILT';print((d.date.today()-d.date.fromisoformat(s)).days if s else 999)")
+          else
+            echo "No catalog yet"
+            AGE=999
+          fi
+          if [ "$AGE" -ge 28 ] || [ "${{ github.event.inputs.full }}" = "true" ]; then
+            echo "full=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "full=false" >> "$GITHUB_OUTPUT"
+            cp work/previous.sqlite work/catalog.sqlite
+          fi
+
+      - name: Download the full GCD dump (monthly)
+        if: steps.previous.outputs.full == 'true'
         run: |
           set -euo pipefail
           BASE=https://www.comics.org
-          UA="ComicScanner catalog builder (personal app; github.com/${{ github.repository }})"
-          JAR=cookies.txt
+          UA="ComicScanner catalog builder (personal app)"
+          JAR=work/cookies.txt
           token() { grep -o 'name="csrfmiddlewaretoken" value="[^"]*"' "$1" | head -1 | sed 's/.*value="//; s/"$//'; }
 
-          curl -sS -A "$UA" -c $JAR -b $JAR "$BASE/accounts/login/" -o login.html
-          CSRF=$(token login.html)
-          [ -n "$CSRF" ] || { echo "::error::comics.org login page didn't load (blocked?)"; head -c 600 login.html; exit 1; }
-
+          curl -sS -A "$UA" -c $JAR -b $JAR "$BASE/accounts/login/" -o work/login.html
+          CSRF=$(token work/login.html)
+          [ -n "$CSRF" ] || { echo "::error::comics.org login page didn't load (blocked?)"; head -c 600 work/login.html; exit 1; }
           curl -sS -A "$UA" -c $JAR -b $JAR -e "$BASE/accounts/login/" \
             --data-urlencode "csrfmiddlewaretoken=$CSRF" \
             --data-urlencode "username=$GCD_EMAIL" \
             --data-urlencode "password=$GCD_PASSWORD" \
             --data-urlencode "next=/download/" \
-            -L "$BASE/accounts/login/" -o after_login.html
-          grep -q 'name="accept_license"' after_login.html || {
-            echo "::error::comics.org login failed — check GCD_EMAIL / GCD_PASSWORD (and that the account is confirmed)."
-            grep -o '<li>[^<]*</li>' after_login.html | head -5 || true
+            -L "$BASE/accounts/login/" -o work/after_login.html
+          grep -q 'name="accept_license"' work/after_login.html || {
+            echo "::error::comics.org login failed — check GCD_EMAIL / GCD_PASSWORD, and that the account is confirmed."
             exit 1
           }
-          CSRF=$(token after_login.html)
-
+          CSRF=$(token work/after_login.html)
           curl -sS -A "$UA" -c $JAR -b $JAR -e "$BASE/download/" \
             --data-urlencode "csrfmiddlewaretoken=$CSRF" \
             --data-urlencode "purpose=non-commercial" \
             --data-urlencode "usage=Offline Marvel/DC catalog for a personal comic scanner app, credited to the GCD" \
             --data-urlencode "accept_license=on" \
             --data-urlencode "sqlite=Download SQLite Dump" \
-            -o gcd.zip -w "HTTP %{http_code}, %{size_download} bytes\n" "$BASE/download/"
-          file gcd.zip
-          unzip -l gcd.zip || { echo "::error::Download wasn't a zip"; head -c 800 gcd.zip; exit 1; }
-
-      - name: Build the catalog
-        run: |
-          set -euo pipefail
-          unzip -o -q gcd.zip -d gcd
-          rm gcd.zip
-          # The dump's file name changes; it's the largest file in the zip.
-          DB=$(find gcd -type f -exec ls -S {} + | head -1)
+            -o work/gcd.zip -w "HTTP %{http_code}, %{size_download} bytes\n" "$BASE/download/"
+          unzip -l work/gcd.zip || { echo "::error::The download wasn't a zip"; head -c 800 work/gcd.zip; exit 1; }
+          unzip -o -q work/gcd.zip -d work/gcd && rm work/gcd.zip
+          DB=$(find work/gcd -type f -exec ls -S {} + | head -1)
           head -c 16 "$DB" | grep -q "SQLite format 3" || { echo "::error::$DB isn't a SQLite file"; exit 1; }
-          echo "Dump: $DB ($(du -h "$DB" | cut -f1))"
-          python3 scripts/build_catalog.py "$DB" out "${{ github.event.inputs.publishers || 'Marvel,DC' }}"
-          ls -la out
+          PREV=""; [ -f work/previous.sqlite ] && PREV="--previous work/previous.sqlite"
+          python3 scripts/catalog.py full "$DB" work/catalog.sqlite $PREV
+          rm -rf work/gcd
+
+      - name: Add this week's new issues
+        run: python3 scripts/catalog.py weekly work/catalog.sqlite --weeks-back 2 --weeks-ahead 3 --budget 400
+
+      - name: Fill in cover links
+        run: python3 scripts/catalog.py covers work/catalog.sqlite --budget "${{ github.event.inputs.cover_budget || '1400' }}"
+
+      - name: Package
+        run: python3 scripts/catalog.py pack work/catalog.sqlite out
 
       - name: Publish
         uses: softprops/action-gh-release@v2
@@ -88,10 +121,11 @@ jobs:
           name: Comic catalog (Marvel & DC)
           make_latest: false
           body: |
-            Offline catalog used by the app for barcode and cover-text matching. Rebuilt monthly.
+            Offline catalog the app uses for barcode and cover matching. Updated weekly.
 
             Catalog data from the [Grand Comics Database™](https://www.comics.org), licensed
-            [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Not a copy of their covers.
+            [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Contains links to GCD cover
+            scans, not the images; the app loads a cover only when a scan needs it.
           files: |
             out/catalog.sqlite.deflate
             out/catalog.json
