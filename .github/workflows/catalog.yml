@@ -76,9 +76,14 @@ jobs:
           JAR=work/cookies.txt
           token() { grep -o 'name="csrfmiddlewaretoken" value="[^"]*"' "$1" | head -1 | sed 's/.*value="//; s/"$//'; }
 
-          curl -sS -A "$UA" -c $JAR -b $JAR "$BASE/accounts/login/" -o work/login.html
-          CSRF=$(token work/login.html)
-          [ -n "$CSRF" ] || { echo "::error::comics.org login page didn't load (blocked?)"; head -c 600 work/login.html; exit 1; }
+          curl -sS -A "$UA" -c $JAR -b $JAR -w "Login page: HTTP %{http_code}\n" "$BASE/accounts/login/" -o work/login.html || true
+          echo "Login page title: $(grep -o '<title>[^<]*' work/login.html | head -1 | sed 's/<title>//' || true)"
+          CSRF=$(token work/login.html || true)
+          if [ -z "$CSRF" ]; then
+            echo "::error::comics.org didn't send its login form. Page text:"
+            sed 's/<[^>]*>/ /g' work/login.html | tr -s ' ' | head -c 800; echo
+            exit 1
+          fi
           curl -sS -A "$UA" -c $JAR -b $JAR -e "$BASE/accounts/login/" \
             --data-urlencode "csrfmiddlewaretoken=$CSRF" \
             --data-urlencode "username=$GCD_EMAIL" \
