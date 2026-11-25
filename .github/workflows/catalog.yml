@@ -46,6 +46,13 @@ jobs:
             exit 1
           fi
 
+      - name: Check comics.org API access
+        run: |
+          CODE=$(curl -sS -u "$GCD_EMAIL:$GCD_PASSWORD" -H "Accept: application/json" -A "ComicScanner catalog builder (personal app)" \
+            -w "%{http_code}" -o work-api.json "https://www.comics.org/api/series/name/Amazing%20Spider-Man/?format=json" || true)
+          echo "API: HTTP $CODE"
+          head -c 300 work-api.json; echo
+
       - name: Get last week's catalog
         id: previous
         run: |
