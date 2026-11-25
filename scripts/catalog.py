@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS issue(id INTEGER PRIMARY KEY, series_id INTEGER NOT N
     variant TEXT NOT NULL DEFAULT '', parent_id INTEGER, barcode TEXT NOT NULL DEFAULT '',
     key_date TEXT NOT NULL DEFAULT '', price TEXT NOT NULL DEFAULT '', cover TEXT NOT NULL DEFAULT '');
 """
+def ensure_columns(db):
+    """Columns added after the first catalogs were published."""
+    cols = {row[1] for row in db.execute("PRAGMA table_info(issue)")}
+    if "priority" not in cols:
+        db.execute("ALTER TABLE issue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+    db.execute("CREATE TABLE IF NOT EXISTS other_series(id INTEGER PRIMARY KEY)")  # checked: not our publishers
+    db.commit()
+
+
 INDEXES = """
 CREATE INDEX IF NOT EXISTS issue_barcode ON issue(barcode) WHERE barcode <> '';
 CREATE INDEX IF NOT EXISTS issue_series_num ON issue(series_id, num);
@@ -218,41 +227,47 @@ def full(source, out_path, previous=None):
 # ---------------------------------------------------------------- weekly new issues
 
 def weekly(path, weeks_back=2, weeks_ahead=3, budget=400, api=None):
+    """Issues on sale in recent and coming weeks. comics.org's weekly list gives only the series and the issue
+    descriptor, so new issues are added with priority and filled in (barcode, cover, date) by details()."""
     db = sqlite3.connect(path)
     db.executescript(SCHEMA)
+    ensure_columns(db)
     api = api or Api(budget)
-    known_series = {row[0] for row in db.execute("SELECT id FROM series")}
-    words = [p.lower() for p in PUBLISHERS]
-    added = updated = 0
+    pubs = publisher_ids(api, db)
+    known = {row[0] for row in db.execute("SELECT id FROM series")}
+    others = {row[0] for row in db.execute("SELECT id FROM other_series")}
+    added = 0
     complete = True
     today = dt.date.today()
     try:
         for offset in range(-weeks_back, weeks_ahead + 1):
             year, week, _ = (today + dt.timedelta(weeks=offset)).isocalendar()
-            print(f"Week {year}-W{week:02d}")
+            week_added = 0
             for item in api.pages(f"{API}/issue/on_sale_weekly/{year}/week/{week}/?format=json"):
                 series_id, issue_id = id_from(item.get("series")), id_from(item.get("api_url"))
-                if not series_id or not issue_id:
+                if not series_id or not issue_id or series_id in others:
                     continue
-                if series_id not in known_series:
-                    text = f"{item.get('indicia_publisher') or ''} {item.get('brand_emblem') or ''}".lower()
-                    publisher = next((p for p, w in zip(PUBLISHERS, words) if re.search(rf"\b{re.escape(w)}\b", text)), None)
-                    if not publisher:
+                if series_id not in known:
+                    info = api.get(f"{API}/series/{series_id}/?format=json")
+                    if not info:
+                        continue  # couldn't check it now; try again next time
+                    pub = id_from(info.get("publisher"))
+                    if pub not in pubs or info.get("country") not in (None, "", "us"):
+                        db.execute("INSERT OR IGNORE INTO other_series VALUES (?)", (series_id,))
+                        others.add(series_id)
                         continue
-                    name = re.sub(r"\s*\(\d{4} series\)\s*$", "", item.get("series_name") or "")
-                    began = (item.get("key_date") or "")[:4]
-                    db.execute("INSERT OR IGNORE INTO series VALUES (?,?,?,?,NULL,?,0,NULL)",
-                               (series_id, name, norm(name), int(began) if began.isdigit() else None, publisher))
-                    known_series.add(series_id)
-                exists = db.execute("SELECT 1 FROM issue WHERE id = ?", (issue_id,)).fetchone()
-                number = (item.get("number") or "").strip()
-                db.execute("INSERT OR REPLACE INTO issue VALUES (?,?,?,?,?,?,?,?,?,?)", (
-                    issue_id, series_id, number, leading_number(number), (item.get("variant_name") or "").strip(),
-                    id_from(item.get("variant_of")), digits(item.get("barcode")), item.get("key_date") or "",
-                    (item.get("price") or "")[:40], item.get("cover") or ""))
-                added += 0 if exists else 1
-                updated += 1 if exists else 0
+                    name = info.get("name") or re.sub(r"\s*\(\d{4} series\)\s*$", "", item.get("series_name") or "")
+                    db.execute("INSERT OR IGNORE INTO series VALUES (?,?,?,?,?,?,0,NULL)",
+                               (series_id, name, norm(name), info.get("year_began"), info.get("year_ended"), pubs[pub]))
+                    known.add(series_id)
+                number, variant = parse_descriptor(item.get("descriptor"))
+                parent = id_from(item.get("variant_of"))
+                week_added += db.execute(
+                    "INSERT OR IGNORE INTO issue (id, series_id, number, num, variant, parent_id, priority) VALUES (?,?,?,?,?,?,1)",
+                    (issue_id, series_id, number, leading_number(number), variant if (variant or not parent) else "Variant", parent)).rowcount
             db.commit()
+            print(f"Week {year}-W{week:02d}: {week_added} new issues")
+            added += week_added
     except BudgetSpent:
         complete = False
         print("Request budget used up; the rest comes tomorrow.")
@@ -260,9 +275,9 @@ def weekly(path, weeks_back=2, weeks_ahead=3, budget=400, api=None):
     db.executescript(INDEXES)
     set_meta(db, built=today.isoformat(), weekly_added=str(added))
     if complete:
-        set_meta(db, weekly_last=today.isoformat())
+        set_meta(db, weekly_last=today.isoformat(), weekly_format="2")
     db.commit()
-    print(f"Weekly: {added} new, {updated} updated, {api.used} requests so far")
+    print(f"Weekly: {added} new issues, {api.used} requests so far")
     return api
 
 
@@ -388,15 +403,16 @@ def discover(path, budget, api=None):
     return api
 
 
-def details(path, budget, api=None):
-    """Barcode, key date, price and cover for issues that don't have them yet: regular issues of
-    recent series first, then variants."""
+def details(path, budget, api=None, only_new=False):
+    """Barcode, key date, price and cover for issues that don't have them yet: new releases first,
+    then the newest series, regular issues before variants."""
     db = sqlite3.connect(path)
+    ensure_columns(db)
     api = api or Api(budget)
-    todo = db.execute("""
+    todo = db.execute(f"""
         SELECT i.id FROM issue i JOIN series s ON s.id = i.series_id
-        WHERE i.key_date = ''
-        ORDER BY (i.parent_id IS NOT NULL), s.year_began DESC, i.num DESC
+        WHERE i.key_date = '' {"AND i.priority = 1" if only_new else ""}
+        ORDER BY i.priority DESC, s.year_began DESC, i.num DESC, (i.parent_id IS NOT NULL)
         LIMIT 5000""").fetchall()
     done = 0
     try:
@@ -408,7 +424,7 @@ def details(path, budget, api=None):
             db.execute("""UPDATE issue SET barcode = ?, key_date = ?, price = ?,
                           cover = CASE WHEN ? <> '' THEN ? ELSE cover END,
                           variant = CASE WHEN ? <> '' THEN ? ELSE variant END,
-                          parent_id = COALESCE(?, parent_id) WHERE id = ?""",
+                          parent_id = COALESCE(?, parent_id), priority = 0 WHERE id = ?""",
                        (digits(item.get("barcode")), item.get("key_date") or "-", (item.get("price") or "")[:40],
                         item.get("cover") or "", item.get("cover") or "",
                         (item.get("variant_name") or "").strip(), (item.get("variant_name") or "").strip(),
@@ -430,9 +446,12 @@ def run(path, budget):
     db.commit()
     api = Api(budget)
     last_weekly = get_meta(db, "weekly_last")
+    if get_meta(db, "weekly_format") != "2":
+        last_weekly = None  # the first weekly runs misread comics.org's weekly list
     db.close()
     if not last_weekly or (dt.date.today() - dt.date.fromisoformat(last_weekly)).days >= 6:
         weekly(path, api=api)
+    details(path, budget, api=api, only_new=True)  # this week's books get barcodes and covers first
     for step in (discover, covers, details):
         if api.used >= api.budget:
             break
