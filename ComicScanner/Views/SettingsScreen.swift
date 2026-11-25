@@ -45,7 +45,21 @@ struct SettingsScreen: View {
                               detail: "Completed sales only, read from eBay's public pages. No account needed.")
                     VStack(alignment: .leading, spacing: 6) {
                         sourceRow("VerseDB", status: verseDBToken.trimmed.isEmpty ? .needsToken("") : .active,
-                                  detail: "Free account. Adds cover-photo identification against its whole catalog, barcode lookup, variants, creators and key-issue notes. Free plan: 5 cover lookups a minute, 100 a day; personal use.")
+                                  detail: "Free account. Only asked when your saved covers and eBay can't find a close match, so its limit lasts much longer. Free plan: 5 cover lookups a minute, 100 a day; personal use.")
+                        if let until = VerseDBClient.pausedUntil, until > Date() {
+                            HStack {
+                                Label("Limit reached — paused until \(until.formatted(date: until.timeIntervalSinceNow > 43_200 ? .abbreviated : .omitted, time: .shortened)). Scanning continues without it.",
+                                      systemImage: "pause.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.caution)
+                                Spacer()
+                                Button("Retry now") {
+                                    VerseDBClient.resume()
+                                    verseDBToken = verseDBToken  // refresh
+                                }
+                                .font(.caption.weight(.semibold))
+                            }
+                        }
                         SecureField("VerseDB API token", text: $verseDBToken)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()

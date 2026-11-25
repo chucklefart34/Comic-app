@@ -124,62 +124,43 @@ enum Identifier {
     /// Matches at or past this distance are "Looks different" and dropped when anything closer exists.
     static let differentLimit: Float = 0.7
 
-    static func identify(cover: CGImage, context: ModelContext, bot: WebBot) async -> Identification {
-        // Start the slow lookups straight away, side by side; the first clear answer wins.
-        let verseDBTask: Task<(found: [ComicSpec], clear: Bool, error: String?)?, Never>? = VerseDBClient.shared.map { verseDB in
-            Task {
-                guard let jpeg = jpeg(cover, maxSide: 1024) else { return nil }
-                do {
-                    let result = try await verseDB.lookUp(coverJPEG: jpeg)
-                    return (result.candidates, result.clearMatch, nil)
-                } catch {
-                    return ([], false, error.localizedDescription)
-                }
-            }
-        }
-        let ebayTask = Task { await ebayCandidates(for: cover, bot: bot) }
-        func cancelAll() {
-            verseDBTask?.cancel()
-            ebayTask.cancel()
-        }
+    /// A match this close is used without asking VerseDB (saves its limited free requests).
+    static let goodEnough: Float = 0.45
 
-        // 1. Covers you've confirmed before — only ones that actually look like this cover.
+    static func identify(cover: CGImage, context: ModelContext, bot: WebBot) async -> Identification {
+        // 1. Covers you've confirmed before — only ones that actually look like this cover. Free and instant.
         let learned = ((try? await CoverRecognizer.matches(forCover: cover, context: context)) ?? [])
             .filter { $0.distance < learnedLimit }
         if let best = learned.first, best.distance < 0.35,
            learned.count == 1 || learned[1].distance - best.distance > 0.12 {
-            cancelAll()
             return Identification(candidates: learned.map { Candidate(spec: $0.print.spec, imageURL: $0.print.imageURL, source: "Your covers", distance: $0.distance) },
                                   confident: true, method: "Cover", photo: cover)
         }
         var candidates = learned.map { Candidate(spec: $0.print.spec, imageURL: $0.print.imageURL, source: "Your covers", distance: $0.distance) }
         var message: String?
 
-        // 2. VerseDB cover lookup.
-        if let verseDBTask, let verseDB = VerseDBClient.shared, let result = await verseDBTask.value {
-            message = result.error
-            var found = result.found
-            if result.clear, var top = found.first {
-                ebayTask.cancel()
-                if let variantID = top.verseDBVariantID { await verseDB.applyVariant(variantID, to: &top) }
-                if let detailed = try? await verseDB.issue(id: top.verseDBIssueID ?? -1) {
-                    top = merged(top, with: detailed)
+        // 2. eBay listings found from the cover's text, ranked by look. Free and unlimited.
+        candidates += await ebayCandidates(for: cover, bot: bot)
+        candidates = ranked(candidates)
+
+        // 3. VerseDB only when nothing close was found (its free plan has a request limit).
+        let closest = candidates.first?.distance ?? 1
+        if closest >= goodEnough, let verseDB = VerseDBClient.shared, let jpeg = jpeg(cover, maxSide: 1024) {
+            do {
+                let result = try await verseDB.lookUp(coverJPEG: jpeg)
+                var found = result.candidates
+                if result.clearMatch, var top = found.first {
+                    if let variantID = top.verseDBVariantID { await verseDB.applyVariant(variantID, to: &top) }
+                    found[0] = top
+                    return Identification(candidates: found.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "VerseDB") },
+                                          confident: true, method: "Cover", photo: cover)
                 }
-                found[0] = top
-                return Identification(candidates: found.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "VerseDB") },
-                                      confident: true, method: "Cover", photo: cover)
+                candidates = ranked(candidates + found.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "VerseDB") })
+            } catch {
+                if VerseDBClient.isPaused { message = nil } else { message = error.localizedDescription }
             }
-            candidates += found.map { Candidate(spec: $0, imageURL: $0.coverImageURL.nilIfEmpty, source: "VerseDB") }
         }
 
-        // 3. eBay listings found from the cover's text, ranked by look.
-        candidates += await ebayTask.value
-
-        candidates = dedupe(candidates).sorted { ($0.distance ?? 0.9) < ($1.distance ?? 0.9) }
-        // Don't show things that look nothing like the cover when there's something closer.
-        if candidates.contains(where: { ($0.distance ?? 1) < differentLimit }) {
-            candidates.removeAll { ($0.distance ?? 0) >= differentLimit }
-        }
         if candidates.isEmpty {
             message = message ?? "Couldn't read this cover. Try the barcode, or type the title."
         }
@@ -190,6 +171,15 @@ enum Identifier {
             return second - first > 0.15
         }()
         return Identification(candidates: Array(candidates.prefix(10)), confident: confident, method: "Cover", photo: cover, message: message)
+    }
+
+    /// Closest first; things that look nothing like the cover are dropped when something closer exists.
+    private static func ranked(_ list: [Candidate]) -> [Candidate] {
+        var candidates = dedupe(list).sorted { ($0.distance ?? 0.9) < ($1.distance ?? 0.9) }
+        if candidates.contains(where: { ($0.distance ?? 1) < differentLimit }) {
+            candidates.removeAll { ($0.distance ?? 0) >= differentLimit }
+        }
+        return candidates
     }
 
     /// Reads the cover's text, searches eBay for it and ranks the listing photos by how much they look like the cover.

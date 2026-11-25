@@ -5,9 +5,40 @@ import Foundation
 struct VerseDBClient {
     let token: String
 
+    /// nil when there's no token, or while VerseDB is paused after hitting its free-plan limit.
     static var shared: VerseDBClient? {
-        Tokens.verseDB.map { VerseDBClient(token: $0) }
+        guard !isPaused else { return nil }
+        return Tokens.verseDB.map { VerseDBClient(token: $0) }
     }
+
+    // MARK: Rate limit
+
+    private static let pausedKey = "verseDBPausedUntil"
+
+    /// When VerseDB can be used again after hitting its limit.
+    static var pausedUntil: Date? {
+        get { UserDefaults.standard.object(forKey: pausedKey) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: pausedKey) }
+    }
+
+    static var isPaused: Bool { (pausedUntil ?? .distantPast) > Date() }
+
+    /// Called when VerseDB answers "too many requests": wait as long as it says (or an hour).
+    static func pause(after response: HTTPURLResponse?) {
+        var seconds: TimeInterval = 3600
+        if let retry = response?.value(forHTTPHeaderField: "Retry-After"), let value = TimeInterval(retry.trimmed) {
+            seconds = value
+        } else if let reset = response?.value(forHTTPHeaderField: "X-RateLimit-Reset"), let value = TimeInterval(reset.trimmed) {
+            // Either seconds from now or a Unix time.
+            seconds = value > 1_000_000_000 ? value - Date().timeIntervalSince1970 : value
+        }
+        pausedUntil = Date().addingTimeInterval(min(max(seconds, 60), 86_400))
+    }
+
+    static func resume() { pausedUntil = nil }
+
+    /// Issue details already fetched this session (they don't change), so the same issue is never asked for twice.
+    @MainActor private static var issueCache: [Int: ComicSpec] = [:]
 
     private static let base = "https://versedb.com/api/v1"
 
@@ -94,10 +125,13 @@ struct VerseDBClient {
 
     /// Full issue details: publisher, credits, key-issue reasons, UPC, ISBN.
     func issue(id: Int) async throws -> ComicSpec {
+        if let cached = await Self.issueCache[id] { return cached }
         let (data, status) = try await request("/issues/\(id)")
         guard status == 200 else { throw Self.error(for: status) }
         guard let json = JSONValue.parse(data), let issue = json["data"] else { throw ServiceError.badData("VerseDB") }
-        return Self.spec(fromIssue: issue)
+        let spec = Self.spec(fromIssue: issue)
+        await MainActor.run { Self.issueCache[id] = spec }
+        return spec
     }
 
     /// Adds variant details (name, cover) for a chosen variant.
@@ -191,7 +225,9 @@ struct VerseDBClient {
         if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         request.httpBody = body
         let (data, response) = try await URLSession.shared.data(for: request)
-        return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+        let http = response as? HTTPURLResponse
+        if http?.statusCode == 429 { Self.pause(after: http) }
+        return (data, http?.statusCode ?? 0)
     }
 
     private static func error(for status: Int) -> ServiceError {
