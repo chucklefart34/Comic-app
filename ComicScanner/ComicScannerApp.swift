@@ -50,6 +50,7 @@ struct RootView: View {
                 .tag(3)
         }
         .task { await AutoUpdater.runIfDue(context: modelContext, bot: bot) }
+        .task { await ComicCatalog.shared.updateIfNeeded() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await AutoUpdater.runIfDue(context: modelContext, bot: bot) } }
         }

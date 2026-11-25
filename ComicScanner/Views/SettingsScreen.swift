@@ -18,6 +18,20 @@ struct SettingsScreen: View {
     @State private var cleared = ""
     @State private var testing = false
     @State private var testResult = ""
+    @State private var catalogInfo = ComicCatalog.installedInfo()
+    @State private var catalogBusy = false
+    @State private var catalogError = ""
+
+    private func updateCatalog() async {
+        catalogBusy = true
+        catalogError = ""
+        do {
+            catalogInfo = try await ComicCatalog.shared.update()
+        } catch {
+            catalogError = error.localizedDescription
+        }
+        catalogBusy = false
+    }
 
     var body: some View {
         NavigationStack {
@@ -28,6 +42,35 @@ struct SettingsScreen: View {
                     Text("Scanning")
                 } footer: {
                     Text("When on, the app scans a cover as soon as it's held steady in the frame. Barcodes and slab QR codes are always read.")
+                }
+
+                Section {
+                    if let info = catalogInfo {
+                        LabeledContent("Issues", value: info.issues.formatted())
+                        LabeledContent("Series", value: info.series.formatted())
+                        if let barcodes = info.with_barcode {
+                            LabeledContent("With barcodes", value: barcodes.formatted())
+                        }
+                        LabeledContent("Updated", value: info.built)
+                    } else {
+                        Text("Not downloaded yet").foregroundStyle(Theme.secondary)
+                    }
+                    Button {
+                        Task { await updateCatalog() }
+                    } label: {
+                        HStack {
+                            Label(catalogInfo == nil ? "Download catalog" : "Update now", systemImage: "arrow.down.circle")
+                            if catalogBusy { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(catalogBusy)
+                    if !catalogError.isEmpty {
+                        Text(catalogError).font(.caption).foregroundStyle(Theme.caution)
+                    }
+                } header: {
+                    Text("Comic catalog (\((catalogInfo?.publishers ?? ["Marvel", "DC"]).joined(separator: " & ")))")
+                } footer: {
+                    Text("Every issue, variant and barcode, on your phone. Barcodes are matched instantly and covers are checked against the series and issue printed on them, with no request limits. Updated monthly. \(ComicCatalog.credit)")
                 }
 
                 Section {

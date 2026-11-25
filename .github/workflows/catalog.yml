@@ -1,0 +1,97 @@
+name: Build comic catalog
+
+# Downloads the Grand Comics Database dump (needs a free comics.org account) and builds the app's
+# offline Marvel & DC catalog. Runs on the 3rd of each month, or by hand from the Actions tab.
+on:
+  schedule:
+    - cron: "17 9 3 * *"
+  workflow_dispatch:
+    inputs:
+      publishers:
+        description: "Publishers to include (GCD names, comma separated)"
+        default: "Marvel,DC"
+
+permissions:
+  contents: write
+
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check comics.org login is set
+        env:
+          GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
+          GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
+        run: |
+          if [ -z "$GCD_EMAIL" ] || [ -z "$GCD_PASSWORD" ]; then
+            echo "::error::Add GCD_EMAIL and GCD_PASSWORD under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - name: Download the GCD SQLite dump
+        env:
+          GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
+          GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BASE=https://www.comics.org
+          UA="ComicScanner catalog builder (personal app; github.com/${{ github.repository }})"
+          JAR=cookies.txt
+          token() { grep -o 'name="csrfmiddlewaretoken" value="[^"]*"' "$1" | head -1 | sed 's/.*value="//; s/"$//'; }
+
+          curl -sS -A "$UA" -c $JAR -b $JAR "$BASE/accounts/login/" -o login.html
+          CSRF=$(token login.html)
+          [ -n "$CSRF" ] || { echo "::error::comics.org login page didn't load (blocked?)"; head -c 600 login.html; exit 1; }
+
+          curl -sS -A "$UA" -c $JAR -b $JAR -e "$BASE/accounts/login/" \
+            --data-urlencode "csrfmiddlewaretoken=$CSRF" \
+            --data-urlencode "username=$GCD_EMAIL" \
+            --data-urlencode "password=$GCD_PASSWORD" \
+            --data-urlencode "next=/download/" \
+            -L "$BASE/accounts/login/" -o after_login.html
+          grep -q 'name="accept_license"' after_login.html || {
+            echo "::error::comics.org login failed — check GCD_EMAIL / GCD_PASSWORD (and that the account is confirmed)."
+            grep -o '<li>[^<]*</li>' after_login.html | head -5 || true
+            exit 1
+          }
+          CSRF=$(token after_login.html)
+
+          curl -sS -A "$UA" -c $JAR -b $JAR -e "$BASE/download/" \
+            --data-urlencode "csrfmiddlewaretoken=$CSRF" \
+            --data-urlencode "purpose=non-commercial" \
+            --data-urlencode "usage=Offline Marvel/DC catalog for a personal comic scanner app, credited to the GCD" \
+            --data-urlencode "accept_license=on" \
+            --data-urlencode "sqlite=Download SQLite Dump" \
+            -o gcd.zip -w "HTTP %{http_code}, %{size_download} bytes\n" "$BASE/download/"
+          file gcd.zip
+          unzip -l gcd.zip || { echo "::error::Download wasn't a zip"; head -c 800 gcd.zip; exit 1; }
+
+      - name: Build the catalog
+        run: |
+          set -euo pipefail
+          unzip -o -q gcd.zip -d gcd
+          rm gcd.zip
+          # The dump's file name changes; it's the largest file in the zip.
+          DB=$(find gcd -type f -exec ls -S {} + | head -1)
+          head -c 16 "$DB" | grep -q "SQLite format 3" || { echo "::error::$DB isn't a SQLite file"; exit 1; }
+          echo "Dump: $DB ($(du -h "$DB" | cut -f1))"
+          python3 scripts/build_catalog.py "$DB" out "${{ github.event.inputs.publishers || 'Marvel,DC' }}"
+          ls -la out
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: catalog
+          name: Comic catalog (Marvel & DC)
+          make_latest: false
+          body: |
+            Offline catalog used by the app for barcode and cover-text matching. Rebuilt monthly.
+
+            Catalog data from the [Grand Comics Database™](https://www.comics.org), licensed
+            [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Not a copy of their covers.
+          files: |
+            out/catalog.sqlite.deflate
+            out/catalog.json

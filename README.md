@@ -63,6 +63,27 @@ Tokens are added in Settings and stored in the iPhone Keychain. Nothing is hard-
 - "AI estimate": there's no AI model in the app (that would need a paid API and a server). Estimates come from the rules above and are always labelled **Estimate · Low confidence**.
 - Condition assessment from photos isn't built yet (marked in the app). It will be an estimate, never a CGC grade.
 
+## Offline comic catalog (Marvel & DC)
+
+Every Marvel and DC issue, variant and barcode lives on the phone, so most books are identified without
+VerseDB or any request limit:
+
+- **Barcodes** are matched against the catalog instantly — exact issue, cover and printing.
+- **Covers**: the series and issue number printed on the cover are looked up in the catalog, and the eBay
+  look-alike that agrees with it is accepted. VerseDB is only asked about books the catalog doesn't know.
+
+The catalog is built by the **Build comic catalog** workflow (`.github/workflows/catalog.yml`,
+`scripts/build_catalog.py`) from the Grand Comics Database data dump, on the 3rd of every month, and
+published to the `catalog` release. The app downloads it on first launch and when it's a month old
+(Settings → Comic catalog → Update now).
+
+Setup (once): make a free account at comics.org, then in this repo go to Settings → Secrets and variables →
+Actions and add `GCD_EMAIL` and `GCD_PASSWORD`. Then run the workflow from the Actions tab. More publishers can be
+added when running it by hand (e.g. `Marvel,DC,Image,Dark Horse`).
+
+Catalog data from the [Grand Comics Database™](https://www.comics.org), licensed
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). No GCD cover images are copied.
+
 ## Internal pricing API
 
 Everything runs on the phone, so there's no server. `Pricing/PricingAPI.swift` gives the same operations as a pricing API would:

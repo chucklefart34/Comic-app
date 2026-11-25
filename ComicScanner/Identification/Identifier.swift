@@ -56,7 +56,19 @@ enum Identifier {
         var candidates: [Candidate] = []
         var message: String?
 
-        // 2. VerseDB barcode lookup.
+        // 2. The offline Marvel & DC catalog: exact issue, cover and printing from the barcode.
+        let fromCatalog = await ComicCatalog.shared.issues(barcode: code, issueNumber: barcode.issueNumber)
+        if !fromCatalog.isEmpty {
+            let specs = fromCatalog.map { issue -> ComicSpec in
+                var spec = issue.spec
+                if spec.upc.isEmpty { spec.upc = code }
+                return spec
+            }
+            let list = specs.map { Candidate(spec: $0, imageURL: nil, source: "Catalog") }
+            return Identification(candidates: list, confident: list.count == 1, method: "Barcode", photo: photo, barcode: barcode)
+        }
+
+        // 3. VerseDB barcode lookup.
         if let verseDB = VerseDBClient.shared {
             do {
                 switch try await verseDB.lookUp(upc: code) {
@@ -140,12 +152,20 @@ enum Identifier {
         var message: String?
 
         // 2. eBay listings found from the cover's text, ranked by look. Free and unlimited.
-        candidates += await ebayCandidates(for: cover, bot: bot)
+        let text = coverText(cover)
+        candidates += await ebayCandidates(for: cover, text: text, bot: bot)
         candidates = ranked(candidates)
 
-        // 3. VerseDB only when nothing close was found (its free plan has a request limit).
+        // 3. The offline catalog: the series named on the cover with that issue number.
+        let catalogHits = await ComicCatalog.shared.match(coverText: text.lines, issue: text.issue)
+        var catalogAgrees = false
+        if !catalogHits.isEmpty {
+            (candidates, catalogAgrees) = applyCatalog(catalogHits, to: candidates)
+        }
+
+        // 4. VerseDB only when nothing close was found (its free plan has a request limit).
         let closest = candidates.first?.distance ?? 1
-        if closest >= goodEnough, let verseDB = VerseDBClient.shared, let jpeg = jpeg(cover, maxSide: 1024) {
+        if closest >= goodEnough, !catalogAgrees, let verseDB = VerseDBClient.shared, let jpeg = jpeg(cover, maxSide: 1024) {
             do {
                 let result = try await verseDB.lookUp(coverJPEG: jpeg)
                 var found = result.candidates
@@ -164,8 +184,10 @@ enum Identifier {
         if candidates.isEmpty {
             message = message ?? "Couldn't read this cover. Try the barcode, or type the title."
         }
-        // One match that looks very close and clearly beats the rest is treated as certain.
+        // Certain when the closest look-alike is also what the catalog says the cover's text names,
+        // or one match looks very close and clearly beats the rest.
         let confident: Bool = {
+            if catalogAgrees, let first = candidates.first?.distance, first < goodEnough { return true }
             guard let first = candidates.first?.distance, first < 0.3 else { return false }
             guard candidates.count > 1, let second = candidates[1].distance else { return true }
             return second - first > 0.15
@@ -183,8 +205,38 @@ enum Identifier {
     }
 
     /// Reads the cover's text, searches eBay for it and ranks the listing photos by how much they look like the cover.
-    private static func ebayCandidates(for cover: CGImage, bot: WebBot) async -> [Candidate] {
-        let text = coverText(cover)
+    /// Uses the catalog's exact series name/publisher/year for eBay matches it confirms, and adds the catalog's
+    /// editions (regular cover first) as choices. Returns whether the closest look-alike is a catalog issue.
+    private static func applyCatalog(_ hits: [CatalogIssue], to list: [Candidate]) -> ([Candidate], Bool) {
+        var candidates = list
+        var agrees = false
+        let regular = hits.filter { !$0.isVariant }
+        for index in candidates.indices {
+            let spec = candidates[index].spec
+            let words = ComicCatalog.tokens(spec.title).joined()
+            guard let hit = regular.first(where: { ComicCatalog.tokens($0.series).joined() == words && $0.number == spec.issue })
+                    ?? regular.first(where: { $0.number == spec.issue && words.contains(ComicCatalog.tokens($0.series).joined()) })
+            else { continue }
+            var updated = hit.spec
+            updated.variant = spec.variant
+            updated.exclusive = spec.exclusive
+            updated.coverImageURL = spec.coverImageURL
+            candidates[index].spec = updated
+            candidates[index].source = "Catalog + eBay photo"
+            if index == 0 { agrees = true }
+        }
+        // The catalog's own editions, for picking by hand (no picture of their own).
+        let known = Set(candidates.map(\.spec.editionKey))
+        let extras = hits.prefix(8).map { Candidate(spec: $0.spec, imageURL: nil, source: "Catalog") }
+            .filter { !known.contains($0.spec.editionKey) }
+        if candidates.isEmpty, let first = extras.first {
+            // Nothing to compare by look: the catalog's regular edition is the best guess.
+            return ([first] + extras.dropFirst(), false)
+        }
+        return (candidates + extras, agrees)
+    }
+
+    private static func ebayCandidates(for cover: CGImage, text: (query: String, issue: String?, lines: [String]), bot: WebBot) async -> [Candidate] {
         guard !text.query.isEmpty, !Task.isCancelled,
               let listings = try? await EbaySoldSearch.listingsForBarcode(text.query, sold: false, bot: bot),
               !Task.isCancelled else { return [] }
@@ -365,7 +417,7 @@ enum Identifier {
     }
 
     /// Words big enough to be the title, plus the issue number, read off the cover.
-    static func coverText(_ cover: CGImage) -> (query: String, issue: String?) {
+    static func coverText(_ cover: CGImage) -> (query: String, issue: String?, lines: [String]) {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
@@ -374,8 +426,10 @@ enum Identifier {
 
         var issue: String?
         var lines: [(String, CGFloat)] = []
+        var allLines: [String] = []
         for observation in observations {
             guard let text = observation.topCandidates(1).first?.string.trimmed, !text.isEmpty else { continue }
+            allLines.append(text)
             if issue == nil, let number = firstMatch(#"(?:#|no\.?\s?)\s?(\d{1,4})\b"#, in: text) { issue = number }
             let letters = text.filter(\.isLetter)
             guard letters.count >= 3, !matches(#"\$|¢|direct edition|approved by|comics code|www\.|\.com"#, text) else { continue }
@@ -388,7 +442,7 @@ enum Identifier {
             .prefix(2)
             .joined(separator: " ")
         let query = [title, issue ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
-        return (title.isEmpty ? "" : query, issue)
+        return (title.isEmpty ? "" : query, issue, allLines)
     }
 
     static func jpeg(_ image: CGImage, maxSide: CGFloat) -> Data? {

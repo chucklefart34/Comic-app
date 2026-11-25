@@ -138,6 +138,8 @@ enum ServiceError: LocalizedError {
     case rateLimited(String)
     case http(String, Int)
     case badData(String)
+    /// A plain message shown as it is.
+    case message(String)
 
     var errorDescription: String? {
         switch self {
@@ -146,6 +148,7 @@ enum ServiceError: LocalizedError {
         case .rateLimited(let service): return "\(service) limit reached for now. Try again in a minute."
         case .http(let service, let code): return "\(service) returned error \(code)."
         case .badData(let service): return "Couldn't read the reply from \(service)."
+        case .message(let text): return text
         }
     }
 }

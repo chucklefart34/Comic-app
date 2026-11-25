@@ -225,6 +225,11 @@ final class ScanSession {
             let result = try await PricingService.valuation(for: record.spec, bot: bot, context: context, forceRefresh: force)
             guard item.record === record else { return }
             record.setValuation(result)
+            // Catalog matches have no picture of their own: use a photo from a matching sale.
+            if record.imageURL == nil,
+               let photo = result.headlineSales(for: record.spec).first(where: { $0.listing.imageURL != nil })?.listing.imageURL {
+                record.imageURL = photo.absoluteString
+            }
             if !result.hasAnyPrice { item.priceError = "No sales found" }
         } catch {
             guard !error.isCancellation, item.record === record else { return }
