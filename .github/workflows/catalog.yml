@@ -1,24 +1,21 @@
 name: Build comic catalog
 
-# Weekly (Thursdays, after new comics come out on Wednesday):
-#   - adds new and upcoming Marvel & DC issues, variants, barcodes and cover links from comics.org
-#   - fills in cover links for older series, a batch each week (newest series first)
-#   - once a month rebuilds everything from the full Grand Comics Database dump, keeping the cover links
-# Needs the repo secrets GCD_EMAIL and GCD_PASSWORD (a free comics.org account).
+# Builds the app's offline Marvel & DC catalog from the comics.org (Grand Comics Database) API, using the
+# free account in the repo secrets GCD_EMAIL / GCD_PASSWORD. Runs every day, inside comics.org's limit for
+# registered accounts (25 requests a minute, 2,000 a day):
+#   - once a week: new and upcoming issues (barcodes, variants, covers) from the on-sale list
+#   - first ~3 days: every Marvel & DC series with all its issues and variants
+#   - then: cover links for every regular issue (~10 days), then barcodes and variant covers, newest first
 on:
   schedule:
-    - cron: "17 14 * * 4"
+    - cron: "17 14 * * *"
   workflow_dispatch:
     inputs:
-      full:
-        description: "Rebuild from the full GCD dump now"
-        type: boolean
-        default: false
-      cover_budget:
-        description: "comics.org requests to spend on cover links this run (their limit is 2,000 a day)"
-        default: "1400"
+      budget:
+        description: "comics.org requests to use in this run (limit 2,000 a day)"
+        default: "1800"
       publishers:
-        description: "Publishers (GCD names, comma separated)"
+        description: "Publishers (Marvel, DC, Image, Dark Horse, IDW, BOOM! Studios)"
         default: "Marvel,DC"
 
 permissions:
@@ -31,7 +28,7 @@ concurrency:
 jobs:
   catalog:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 150
     env:
       GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
       GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
@@ -46,82 +43,19 @@ jobs:
             exit 1
           fi
 
-      - name: Check comics.org API access
-        run: |
-          CODE=$(curl -sS -u "$GCD_EMAIL:$GCD_PASSWORD" -H "Accept: application/json" -A "ComicScanner catalog builder (personal app)" \
-            -w "%{http_code}" -o work-api.json "https://www.comics.org/api/series/name/Amazing%20Spider-Man/?format=json" || true)
-          echo "API: HTTP $CODE"
-          head -c 300 work-api.json; echo
-
-      - name: Get last week's catalog
-        id: previous
+      - name: Get the current catalog
         run: |
           mkdir -p work out
           URL="https://github.com/${{ github.repository }}/releases/download/catalog/catalog.sqlite.deflate"
           if curl -sSfL "$URL" -o work/previous.deflate; then
-            python3 scripts/catalog.py unpack work/previous.deflate work/previous.sqlite
-            FULL_BUILT=$(python3 -c "import sqlite3;print((sqlite3.connect('work/previous.sqlite').execute(\"select value from meta where key='full_built'\").fetchone() or [''])[0])")
-            echo "Last full build: ${FULL_BUILT:-never}"
-            AGE=$(python3 -c "import datetime as d,sys;s='$FULL_BUILT';print((d.date.today()-d.date.fromisoformat(s)).days if s else 999)")
+            python3 scripts/catalog.py unpack work/previous.deflate work/catalog.sqlite
+            echo "Continuing the existing catalog"
           else
-            echo "No catalog yet"
-            AGE=999
-          fi
-          if [ "$AGE" -ge 28 ] || [ "${{ github.event.inputs.full }}" = "true" ]; then
-            echo "full=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "full=false" >> "$GITHUB_OUTPUT"
-            cp work/previous.sqlite work/catalog.sqlite
+            echo "Starting a new catalog"
           fi
 
-      - name: Download the full GCD dump (monthly)
-        if: steps.previous.outputs.full == 'true'
-        run: |
-          set -euo pipefail
-          BASE=https://www.comics.org
-          UA="ComicScanner catalog builder (personal app)"
-          JAR=work/cookies.txt
-          token() { grep -o 'name="csrfmiddlewaretoken" value="[^"]*"' "$1" | head -1 | sed 's/.*value="//; s/"$//'; }
-
-          curl -sS -A "$UA" -c $JAR -b $JAR -w "Login page: HTTP %{http_code}\n" "$BASE/accounts/login/" -o work/login.html || true
-          echo "Login page title: $(grep -o '<title>[^<]*' work/login.html | head -1 | sed 's/<title>//' || true)"
-          CSRF=$(token work/login.html || true)
-          if [ -z "$CSRF" ]; then
-            echo "::error::comics.org didn't send its login form. Page text:"
-            sed 's/<[^>]*>/ /g' work/login.html | tr -s ' ' | head -c 800; echo
-            exit 1
-          fi
-          curl -sS -A "$UA" -c $JAR -b $JAR -e "$BASE/accounts/login/" \
-            --data-urlencode "csrfmiddlewaretoken=$CSRF" \
-            --data-urlencode "username=$GCD_EMAIL" \
-            --data-urlencode "password=$GCD_PASSWORD" \
-            --data-urlencode "next=/download/" \
-            -L "$BASE/accounts/login/" -o work/after_login.html
-          grep -q 'name="accept_license"' work/after_login.html || {
-            echo "::error::comics.org login failed — check GCD_EMAIL / GCD_PASSWORD, and that the account is confirmed."
-            exit 1
-          }
-          CSRF=$(token work/after_login.html)
-          curl -sS -A "$UA" -c $JAR -b $JAR -e "$BASE/download/" \
-            --data-urlencode "csrfmiddlewaretoken=$CSRF" \
-            --data-urlencode "purpose=non-commercial" \
-            --data-urlencode "usage=Offline Marvel/DC catalog for a personal comic scanner app, credited to the GCD" \
-            --data-urlencode "accept_license=on" \
-            --data-urlencode "sqlite=Download SQLite Dump" \
-            -o work/gcd.zip -w "HTTP %{http_code}, %{size_download} bytes\n" "$BASE/download/"
-          unzip -l work/gcd.zip || { echo "::error::The download wasn't a zip"; head -c 800 work/gcd.zip; exit 1; }
-          unzip -o -q work/gcd.zip -d work/gcd && rm work/gcd.zip
-          DB=$(find work/gcd -type f -exec ls -S {} + | head -1)
-          head -c 16 "$DB" | grep -q "SQLite format 3" || { echo "::error::$DB isn't a SQLite file"; exit 1; }
-          PREV=""; [ -f work/previous.sqlite ] && PREV="--previous work/previous.sqlite"
-          python3 scripts/catalog.py full "$DB" work/catalog.sqlite $PREV
-          rm -rf work/gcd
-
-      - name: Add this week's new issues
-        run: python3 scripts/catalog.py weekly work/catalog.sqlite --weeks-back 2 --weeks-ahead 3 --budget 400
-
-      - name: Fill in cover links
-        run: python3 scripts/catalog.py covers work/catalog.sqlite --budget "${{ github.event.inputs.cover_budget || '1400' }}"
+      - name: Update from comics.org
+        run: python3 scripts/catalog.py run work/catalog.sqlite --budget "${{ github.event.inputs.budget || '1800' }}"
 
       - name: Package
         run: python3 scripts/catalog.py pack work/catalog.sqlite out
@@ -133,7 +67,7 @@ jobs:
           name: Comic catalog (Marvel & DC)
           make_latest: false
           body: |
-            Offline catalog the app uses for barcode and cover matching. Updated weekly.
+            Offline catalog the app uses for barcode and cover matching. Updated daily.
 
             Catalog data from the [Grand Comics Database™](https://www.comics.org), licensed
             [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Contains links to GCD cover

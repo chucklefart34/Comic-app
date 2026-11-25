@@ -73,20 +73,22 @@ books are identified without VerseDB or any request limit:
   compared with the catalog's cover scans for that issue (variants included) and with eBay photos. VerseDB is
   only asked about books the catalog doesn't know.
 
-The **Build comic catalog** workflow (`.github/workflows/catalog.yml`, `scripts/catalog.py`) runs every
-Thursday:
+The **Build comic catalog** workflow (`.github/workflows/catalog.yml`, `scripts/catalog.py`) builds it from the
+comics.org API with your free account, every day, inside comics.org's limit for registered accounts
+(25 requests a minute, 2,000 a day — the job uses 1,800):
 
-- adds new and upcoming issues (with variants, barcodes and cover links) from comics.org's weekly on-sale list;
-- fills in cover links for older series, about 1,400 comics.org requests a week (their limit for a free account
-  is 25 a minute, 2,000 a day), newest series first, until every series has them;
-- once every four weeks, rebuilds everything from the full GCD data dump, keeping the cover links already found.
+- once a week: new and upcoming issues, with barcodes, variants and cover links, from the on-sale list;
+- first ~3 days: every Marvel & DC series with all its issues and variants;
+- next ~10 days: a cover link for every regular issue;
+- after that: barcodes and variant covers for older issues, newest first, a batch each day.
 
-It publishes to the `catalog` release; the app downloads it when it's a week old (Settings → Comic catalog →
-Update now). Only cover *links* are stored — the phone loads a cover picture only when a scan needs it.
+(comics.org's website — and so its full data download — sits behind a Cloudflare check that GitHub's servers
+can't pass, so the catalog is built from the API instead.) It's published to the `catalog` release; the app
+checks once a day and downloads it when it has changed (Settings → Comic catalog → Update now). Only cover
+*links* are stored — the phone loads a cover picture only when a scan needs it.
 
 Setup (once): make a free account at comics.org, then in this repo go to Settings → Secrets and variables →
-Actions and add `GCD_EMAIL` and `GCD_PASSWORD`. Then run the workflow from the Actions tab. More publishers can be
-added when running it by hand (e.g. `Marvel,DC,Image,Dark Horse`).
+Actions and add `GCD_EMAIL` and `GCD_PASSWORD`. Then run the workflow from the Actions tab (it then runs daily by itself).
 
 Catalog data from the [Grand Comics Database™](https://www.comics.org), licensed
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).

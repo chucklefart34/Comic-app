@@ -101,16 +101,17 @@ actor ComicCatalog {
 
     // MARK: Download
 
-    /// Downloads the catalog if it's missing or a week old (it's rebuilt every Thursday).
-    /// Quiet: failures just leave the old one.
+    /// Once a day, checks whether a newer catalog has been published (it grows daily while it's being built,
+    /// then gets new releases weekly) and downloads it if so. Quiet: failures just keep the old one.
     func updateIfNeeded() async {
         let checkedKey = "catalogCheckedAt"
-        if let info = Self.installedInfo(), let built = Self.date(info.built),
-           Date().timeIntervalSince(built) < 7 * 86_400 { return }
-        // Don't keep re-downloading the same file when a weekly build hasn't happened yet.
         if let checked = UserDefaults.standard.object(forKey: checkedKey) as? Date,
-           Date().timeIntervalSince(checked) < 86_400, Self.installedInfo() != nil { return }
+           Date().timeIntervalSince(checked) < 20 * 3600, Self.installedInfo() != nil { return }
+        guard let (data, response) = try? await URLSession.shared.data(from: URL(string: Self.releaseBase + "catalog.json")!),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let latest = try? JSONDecoder().decode(Info.self, from: data) else { return }
         UserDefaults.standard.set(Date(), forKey: checkedKey)
+        if let installed = Self.installedInfo(), installed == latest { return }
         _ = try? await update()
     }
 

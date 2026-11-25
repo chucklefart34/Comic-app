@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Builds and updates the app's offline comic catalog from the Grand Comics Database (comics.org).
 
-  catalog.py full <gcd.sqlite> <out_dir> [--previous old.sqlite]   rebuild from the GCD SQLite dump
-  catalog.py weekly <catalog.sqlite> [--weeks-back 2 --weeks-ahead 2] add issues on sale in recent/coming weeks
-  catalog.py covers <catalog.sqlite> --budget 1400                  fill in cover links, newest series first
+  catalog.py run <catalog.sqlite> --budget 1800                     daily job: all of the steps below, in order,
+                                                                    within one day's request budget
+  catalog.py weekly <catalog.sqlite>                                add issues on sale in recent/coming weeks
+  catalog.py discover <catalog.sqlite> --budget N                   page through comics.org's series list and add
+                                                                    every series of the chosen publishers, with
+                                                                    all their issues and variants
+  catalog.py covers <catalog.sqlite> --budget N                     cover links for regular issues, per series
+  catalog.py details <catalog.sqlite> --budget N                    barcodes + variant covers, issue by issue
+  catalog.py full <gcd.sqlite> <catalog.sqlite> [--previous old]    (local use) rebuild from a GCD SQLite dump
   catalog.py pack <catalog.sqlite> <out_dir>                        compress + write catalog.json
   catalog.py unpack <catalog.sqlite.deflate> <catalog.sqlite>       the reverse (to continue last week's catalog)
 
@@ -29,6 +35,8 @@ import zlib
 API = os.environ.get("CATALOG_API", "https://www.comics.org/api")
 USER_AGENT = "ComicScanner catalog builder (personal app)"
 PUBLISHERS = [p.strip() for p in os.environ.get("CATALOG_PUBLISHERS", "Marvel,DC").split(",") if p.strip()]
+# comics.org publisher ids (the API can't list series by publisher, so they're matched by id).
+KNOWN_PUBLISHER_IDS = {"Marvel": 78, "DC": 54, "Image": 709, "Dark Horse": 512, "IDW": 4268, "BOOM! Studios": 2547}
 CREDIT = "Catalog data from the Grand Comics Database (https://www.comics.org), licensed CC BY-SA 4.0."
 
 SCHEMA = """
@@ -209,13 +217,14 @@ def full(source, out_path, previous=None):
 
 # ---------------------------------------------------------------- weekly new issues
 
-def weekly(path, weeks_back=2, weeks_ahead=2, budget=400):
+def weekly(path, weeks_back=2, weeks_ahead=3, budget=400, api=None):
     db = sqlite3.connect(path)
     db.executescript(SCHEMA)
-    api = Api(budget)
+    api = api or Api(budget)
     known_series = {row[0] for row in db.execute("SELECT id FROM series")}
     words = [p.lower() for p in PUBLISHERS]
     added = updated = 0
+    complete = True
     today = dt.date.today()
     try:
         for offset in range(-weeks_back, weeks_ahead + 1):
@@ -245,21 +254,28 @@ def weekly(path, weeks_back=2, weeks_ahead=2, budget=400):
                 updated += 1 if exists else 0
             db.commit()
     except BudgetSpent:
-        print("Request budget used up; the rest comes next week.")
+        complete = False
+        print("Request budget used up; the rest comes tomorrow.")
     db.execute("UPDATE series SET issue_count = (SELECT COUNT(*) FROM issue WHERE issue.series_id = series.id)")
     db.executescript(INDEXES)
     set_meta(db, built=today.isoformat(), weekly_added=str(added))
+    if complete:
+        set_meta(db, weekly_last=today.isoformat())
     db.commit()
-    print(f"Weekly: {added} new, {updated} updated, {api.used} requests")
+    print(f"Weekly: {added} new, {updated} updated, {api.used} requests so far")
+    return api
 
 
 # ---------------------------------------------------------------- cover links for older series
 
-def covers(path, budget):
+def covers(path, budget, api=None):
     db = sqlite3.connect(path)
-    api = Api(budget)
+    api = api or Api(budget)
     # Never-checked series first, newest first; then the ones checked longest ago.
-    todo = db.execute("SELECT id FROM series ORDER BY covers_checked IS NOT NULL, covers_checked, year_began DESC").fetchall()
+    # Only series not checked in the last 60 days; never-checked first, newest series first.
+    cutoff = (dt.date.today() - dt.timedelta(days=60)).isoformat()
+    todo = db.execute("""SELECT id FROM series WHERE covers_checked IS NULL OR covers_checked < ?
+                         ORDER BY covers_checked IS NOT NULL, covers_checked, year_began DESC""", (cutoff,)).fetchall()
     found = checked = 0
     try:
         for (series_id,) in todo:
@@ -275,8 +291,156 @@ def covers(path, budget):
     except BudgetSpent:
         print("Request budget used up; more covers next week.")
     db.commit()
-    print(f"Covers: {checked} series checked, {found} new cover links, {api.used} requests")
+    print(f"Covers: {checked} series checked, {found} new cover links, {api.used} requests so far")
+    return api
 
+
+
+# ---------------------------------------------------------------- API-only building (daily job)
+
+def parse_descriptor(text):
+    """'300 [Newsstand] (75960...)' -> ('300', 'Newsstand')."""
+    text = (text or "").strip()
+    variant = ""
+    match = re.search(r"\[([^\]]*)\]", text)
+    if match:
+        variant = match.group(1).strip()
+        if variant.lower() == "unnamed variant":
+            variant = "Variant"
+    number = re.split(r"\s\[|\s\(", text, maxsplit=1)[0].strip()
+    number = re.sub(r"^v\d+#", "", number)  # volume prefix
+    number = number.split(" - ")[0].strip()  # issue title
+    return number, variant
+
+
+def publisher_ids(api, db):
+    """Checks the known ids against comics.org once, and remembers them."""
+    saved = get_meta(db, "publisher_ids")
+    if saved:
+        ids = {int(k): v for k, v in json.loads(saved).items()}
+        if sorted(ids.values()) == sorted(PUBLISHERS):
+            return ids
+    ids = {}
+    for name in PUBLISHERS:
+        pid = KNOWN_PUBLISHER_IDS.get(name)
+        if not pid:
+            print(f"Unknown comics.org id for publisher {name!r}; add it to KNOWN_PUBLISHER_IDS")
+            continue
+        info = api.get(f"{API}/publisher/{pid}/?format=json") or {}
+        print(f"Publisher {pid}: {info.get('name')!r} (for {name})")
+        ids[pid] = name
+    set_meta(db, publisher_ids=json.dumps({str(k): v for k, v in ids.items()}))
+    db.commit()
+    return ids
+
+
+def discover(path, budget, api=None):
+    db = sqlite3.connect(path)
+    db.executescript(SCHEMA)
+    api = api or Api(budget)
+    pubs = publisher_ids(api, db)
+    if get_meta(db, "discover_done") == "1":
+        print("Discover: already done")
+        return api
+    page = int(get_meta(db, "discover_page", "1"))
+    series_added = issues_added = 0
+    try:
+        while True:
+            data = api.get(f"{API}/series/?format=json&page={page}")
+            if not data:
+                set_meta(db, discover_done="1")
+                break
+            for item in data.get("results", []):
+                pub = id_from(item.get("publisher"))
+                if pub not in pubs:
+                    continue
+                if item.get("country") not in (None, "", "us"):
+                    continue
+                sid = id_from(item.get("api_url"))
+                name = item.get("name") or ""
+                db.execute("INSERT OR REPLACE INTO series VALUES (?,?,?,?,?,?,?, (SELECT covers_checked FROM series WHERE id = ?))",
+                           (sid, name, norm(name), item.get("year_began"), item.get("year_ended"), pubs[pub],
+                            len(item.get("active_issues") or []), sid))
+                series_added += 1
+                regular = {}
+                rows = []
+                for url, descriptor in zip(item.get("active_issues") or [], item.get("issue_descriptors") or []):
+                    iid = id_from(url)
+                    number, variant = parse_descriptor(descriptor)
+                    if not variant:
+                        regular.setdefault(number, iid)
+                    rows.append((iid, number, variant))
+                for iid, number, variant in rows:
+                    parent = regular.get(number) if variant else None
+                    issues_added += db.execute(
+                        "INSERT OR IGNORE INTO issue (id, series_id, number, num, variant, parent_id) VALUES (?,?,?,?,?,?)",
+                        (iid, sid, number, leading_number(number), variant, parent)).rowcount
+            page += 1
+            set_meta(db, discover_page=str(page))
+            db.commit()
+            if not data.get("next"):
+                set_meta(db, discover_done="1")
+                break
+    except BudgetSpent:
+        pass
+    db.commit()
+    print(f"Discover: page {page}, {series_added} series, {issues_added} new issues, {api.used} requests so far")
+    return api
+
+
+def details(path, budget, api=None):
+    """Barcode, key date, price and cover for issues that don't have them yet: regular issues of
+    recent series first, then variants."""
+    db = sqlite3.connect(path)
+    api = api or Api(budget)
+    todo = db.execute("""
+        SELECT i.id FROM issue i JOIN series s ON s.id = i.series_id
+        WHERE i.key_date = ''
+        ORDER BY (i.parent_id IS NOT NULL), s.year_began DESC, i.num DESC
+        LIMIT 5000""").fetchall()
+    done = 0
+    try:
+        for (iid,) in todo:
+            item = api.get(f"{API}/issue/{iid}/?format=json")
+            if not item:
+                db.execute("UPDATE issue SET key_date = '?' WHERE id = ?", (iid,))  # gone: don't ask again
+                continue
+            db.execute("""UPDATE issue SET barcode = ?, key_date = ?, price = ?,
+                          cover = CASE WHEN ? <> '' THEN ? ELSE cover END,
+                          variant = CASE WHEN ? <> '' THEN ? ELSE variant END,
+                          parent_id = COALESCE(?, parent_id) WHERE id = ?""",
+                       (digits(item.get("barcode")), item.get("key_date") or "-", (item.get("price") or "")[:40],
+                        item.get("cover") or "", item.get("cover") or "",
+                        (item.get("variant_name") or "").strip(), (item.get("variant_name") or "").strip(),
+                        id_from(item.get("variant_of")), iid))
+            done += 1
+            if done % 100 == 0:
+                db.commit()
+    except BudgetSpent:
+        pass
+    db.commit()
+    print(f"Details: {done} issues filled in, {api.used} requests so far")
+    return api
+
+
+def run(path, budget):
+    """The daily job: weekly releases (if due), then discovering series, then covers, then details."""
+    db = sqlite3.connect(path)
+    db.executescript(SCHEMA)
+    db.commit()
+    api = Api(budget)
+    last_weekly = get_meta(db, "weekly_last")
+    db.close()
+    if not last_weekly or (dt.date.today() - dt.date.fromisoformat(last_weekly)).days >= 6:
+        weekly(path, api=api)
+    for step in (discover, covers, details):
+        if api.used >= api.budget:
+            break
+        step(path, budget, api=api)
+    db = sqlite3.connect(path)
+    set_meta(db, built=dt.date.today().isoformat())
+    db.commit()
+    print("Catalog:", summary(db), f"· {api.used} comics.org requests today")
 
 # ---------------------------------------------------------------- packaging
 
@@ -325,6 +489,9 @@ def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("full"); p.add_argument("dump"); p.add_argument("catalog"); p.add_argument("--previous")
+    p = sub.add_parser("run"); p.add_argument("catalog"); p.add_argument("--budget", type=int, default=1800)
+    p = sub.add_parser("discover"); p.add_argument("catalog"); p.add_argument("--budget", type=int, default=1800)
+    p = sub.add_parser("details"); p.add_argument("catalog"); p.add_argument("--budget", type=int, default=1800)
     p = sub.add_parser("weekly"); p.add_argument("catalog")
     p.add_argument("--weeks-back", type=int, default=2); p.add_argument("--weeks-ahead", type=int, default=2)
     p.add_argument("--budget", type=int, default=400)
@@ -334,6 +501,12 @@ def main():
     args = parser.parse_args()
     if args.command == "full":
         full(args.dump, args.catalog, args.previous)
+    elif args.command == "run":
+        run(args.catalog, args.budget)
+    elif args.command == "discover":
+        discover(args.catalog, args.budget)
+    elif args.command == "details":
+        details(args.catalog, args.budget)
     elif args.command == "weekly":
         weekly(args.catalog, args.weeks_back, args.weeks_ahead, args.budget)
     elif args.command == "covers":
