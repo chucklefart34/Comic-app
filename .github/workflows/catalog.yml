@@ -16,7 +16,7 @@ on:
         default: "1800"
       publishers:
         description: "Publishers (Marvel, DC, Image, Dark Horse, IDW, BOOM! Studios)"
-        default: "Marvel,DC"
+        default: "Marvel,DC,Image"
 
 permissions:
   contents: write
@@ -32,7 +32,7 @@ jobs:
     env:
       GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
       GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
-      CATALOG_PUBLISHERS: ${{ github.event.inputs.publishers || 'Marvel,DC' }}
+      CATALOG_PUBLISHERS: ${{ github.event.inputs.publishers || 'Marvel,DC,Image' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,7 +64,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: catalog
-          name: Comic catalog (Marvel & DC)
+          name: Comic catalog (Marvel, DC & Image)
           make_latest: false
           body: |
             Offline catalog the app uses for barcode and cover matching. Updated daily.

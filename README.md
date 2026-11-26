@@ -63,9 +63,9 @@ Tokens are added in Settings and stored in the iPhone Keychain. Nothing is hard-
 - "AI estimate": there's no AI model in the app (that would need a paid API and a server). Estimates come from the rules above and are always labelled **Estimate · Low confidence**.
 - Condition assessment from photos isn't built yet (marked in the app). It will be an estimate, never a CGC grade.
 
-## Offline comic catalog (Marvel & DC)
+## Offline comic catalog (Marvel, DC & Image)
 
-Every Marvel and DC issue, variant and barcode lives on the phone, with links to their cover scans, so most
+Every Marvel, DC and Image issue, variant and barcode lives on the phone, with links to their cover scans, so most
 books are identified without VerseDB or any request limit:
 
 - **Barcodes** are matched against the catalog instantly — exact issue, cover and printing.
@@ -78,7 +78,8 @@ comics.org API with your free account, every day, inside comics.org's limit for 
 (25 requests a minute, 2,000 a day — the job uses 1,800):
 
 - once a week: new and upcoming issues, with barcodes, variants and cover links, from the on-sale list;
-- first ~3 days: every Marvel & DC series with all its issues and variants;
+- first ~3 days: every Marvel, DC & Image series with all its issues and variants (adding a publisher later
+  goes through the series list again; Dark Horse, IDW and BOOM! Studios ids are also known);
 - next ~10 days: a cover link for every regular issue;
 - after that: barcodes and variant covers for older issues, newest first, a batch each day.
 

@@ -23,7 +23,13 @@ struct CatalogIssue: Hashable, Identifiable {
         var spec = ComicSpec()
         spec.title = series
         spec.issue = number
-        spec.publisher = publisher == "DC" ? "DC Comics" : (publisher == "Marvel" ? "Marvel Comics" : publisher)
+        switch publisher {
+        case "DC": spec.publisher = "DC Comics"
+        case "Marvel": spec.publisher = "Marvel Comics"
+        case "Image": spec.publisher = "Image Comics"
+        case "Dark Horse": spec.publisher = "Dark Horse Comics"
+        default: spec.publisher = publisher
+        }
         let year = String(keyDate.prefix(4))
         spec.year = Int(year) != nil ? year : seriesYear.map(String.init) ?? ""
         spec.upc = barcode

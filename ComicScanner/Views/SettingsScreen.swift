@@ -71,7 +71,7 @@ struct SettingsScreen: View {
                         Text(catalogError).font(.caption).foregroundStyle(Theme.caution)
                     }
                 } header: {
-                    Text("Comic catalog (\((catalogInfo?.publishers ?? ["Marvel", "DC"]).joined(separator: " & ")))")
+                    Text("Comic catalog (\((catalogInfo?.publishers ?? ["Marvel", "DC", "Image"]).formatted(.list(type: .and))))")
                 } footer: {
                     Text("Every issue, variant and barcode, on your phone, with cover pictures added a batch at a time. Barcodes are matched instantly; covers are matched to the series and issue printed on them and compared with the real cover. New books are added every Thursday. \(ComicCatalog.credit)")
                 }

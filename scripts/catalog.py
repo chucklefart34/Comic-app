@@ -34,7 +34,7 @@ import zlib
 
 API = os.environ.get("CATALOG_API", "https://www.comics.org/api")
 USER_AGENT = "ComicScanner catalog builder (personal app)"
-PUBLISHERS = [p.strip() for p in os.environ.get("CATALOG_PUBLISHERS", "Marvel,DC").split(",") if p.strip()]
+PUBLISHERS = [p.strip() for p in os.environ.get("CATALOG_PUBLISHERS", "Marvel,DC,Image").split(",") if p.strip()]
 # comics.org publisher ids (the API can't list series by publisher, so they're matched by id).
 KNOWN_PUBLISHER_IDS = {"Marvel": 78, "DC": 54, "Image": 709, "Dark Horse": 512, "IDW": 4268, "BOOM! Studios": 2547}
 CREDIT = "Catalog data from the Grand Comics Database (https://www.comics.org), licensed CC BY-SA 4.0."
@@ -95,6 +95,10 @@ class BudgetSpent(Exception):
     pass
 
 
+class Unreachable(BudgetSpent):
+    """comics.org stopped answering: stop for today like a spent budget, keeping what was done."""
+
+
 class Api:
     """comics.org API with basic auth, paced under 25 requests a minute, with a request budget per run."""
 
@@ -106,10 +110,14 @@ class Api:
         self.budget = budget
         self.used = 0
         self.last = 0.0
+        self.unreachable = False
+        self.stop_at = None  # a step's own share of the budget
 
     def get(self, url):
+        if self.unreachable:
+            raise Unreachable()
         for attempt in range(3):
-            if self.used >= self.budget:
+            if self.used >= self.budget or (self.stop_at is not None and self.used >= self.stop_at):
                 raise BudgetSpent()
             wait = float(os.environ.get("CATALOG_PACE", "2.6")) - (time.time() - self.last)  # about 23 a minute
             if wait > 0:
@@ -134,12 +142,16 @@ class Api:
                 if error.code in (401, 403):
                     sys.exit(f"comics.org refused the login ({error.code}). Check GCD_EMAIL / GCD_PASSWORD.")
                 if attempt == 2:
-                    raise
-                time.sleep(10)
-            except (urllib.error.URLError, TimeoutError):
+                    self.unreachable = True
+                    raise Unreachable()
+                time.sleep(30 * (attempt + 1))
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as error:
+                print(f"  comics.org didn't answer ({error}); retrying")
                 if attempt == 2:
-                    raise
-                time.sleep(10)
+                    self.unreachable = True
+                    print("  comics.org isn't answering; saving what's done and stopping for today")
+                    raise Unreachable()
+                time.sleep(30 * (attempt + 1))
         return None
 
     def pages(self, url):
@@ -335,6 +347,11 @@ def publisher_ids(api, db):
         ids = {int(k): v for k, v in json.loads(saved).items()}
         if sorted(ids.values()) == sorted(PUBLISHERS):
             return ids
+    if saved:
+        print("Publishers changed: going through comics.org's series list again for the new ones")
+        set_meta(db, discover_page="1", discover_done="0")
+        db.execute("DELETE FROM meta WHERE key = 'weekly_last'")
+        db.execute("DELETE FROM other_series")
     ids = {}
     for name in PUBLISHERS:
         pid = KNOWN_PUBLISHER_IDS.get(name)
@@ -440,26 +457,40 @@ def details(path, budget, api=None, only_new=False):
 
 
 def run(path, budget):
-    """The daily job: weekly releases (if due), then discovering series, then covers, then details."""
+    """The daily job: weekly releases (if due) and their details, then discovering series (with about a third
+    of the day kept for covers), then covers, then details. Stops cleanly when the budget is spent or
+    comics.org stops answering; what was done is kept."""
     db = sqlite3.connect(path)
     db.executescript(SCHEMA)
-    db.commit()
-    api = Api(budget)
+    ensure_columns(db)
     last_weekly = get_meta(db, "weekly_last")
     if get_meta(db, "weekly_format") != "2":
         last_weekly = None  # the first weekly runs misread comics.org's weekly list
     db.close()
+    api = Api(budget)
+
+    def step(function, *args, **kwargs):
+        if api.unreachable or api.used >= api.budget:
+            return
+        try:
+            function(*args, api=api, **kwargs)
+        except BudgetSpent:
+            pass
+
     if not last_weekly or (dt.date.today() - dt.date.fromisoformat(last_weekly)).days >= 6:
-        weekly(path, api=api)
-    details(path, budget, api=api, only_new=True)  # this week's books get barcodes and covers first
-    for step in (discover, covers, details):
-        if api.used >= api.budget:
-            break
-        step(path, budget, api=api)
+        step(weekly, path)
+    step(details, path, budget, only_new=True)  # this week's books get barcodes and covers first
+    api.stop_at = api.used + int((api.budget - api.used) * 0.65)
+    step(discover, path, budget)
+    api.stop_at = None
+    step(covers, path, budget)
+    step(details, path, budget)
+
     db = sqlite3.connect(path)
     set_meta(db, built=dt.date.today().isoformat())
     db.commit()
     print("Catalog:", summary(db), f"· {api.used} comics.org requests today")
+
 
 # ---------------------------------------------------------------- packaging
 
