@@ -113,7 +113,7 @@ class Api:
         self.unreachable = False
         self.stop_at = None  # a step's own share of the budget
 
-    def get(self, url):
+    def get(self, url, timeout=60):
         if self.unreachable:
             raise Unreachable()
         for attempt in range(3):
@@ -127,7 +127,7 @@ class Api:
             request = urllib.request.Request(url, headers={
                 "Authorization": self.auth, "Accept": "application/json", "User-Agent": USER_AGENT})
             try:
-                with urllib.request.urlopen(request, timeout=60) as response:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
                     return json.load(response)
             except urllib.error.HTTPError as error:
                 if error.code == 429:
@@ -154,9 +154,9 @@ class Api:
                 time.sleep(30 * (attempt + 1))
         return None
 
-    def pages(self, url):
+    def pages(self, url, timeout=60):
         while url:
-            page = self.get(url)
+            page = self.get(url, timeout)
             if not page:
                 return
             yield from page.get("results", [])
@@ -255,7 +255,7 @@ def weekly(path, weeks_back=2, weeks_ahead=3, budget=400, api=None):
         for offset in range(-weeks_back, weeks_ahead + 1):
             year, week, _ = (today + dt.timedelta(weeks=offset)).isocalendar()
             week_added = 0
-            for item in api.pages(f"{API}/issue/on_sale_weekly/{year}/week/{week}/?format=json"):
+            for item in api.pages(f"{API}/issue/on_sale_weekly/{year}/week/{week}/?format=json", timeout=180):
                 series_id, issue_id = id_from(item.get("series")), id_from(item.get("api_url"))
                 if not series_id or not issue_id or series_id in others:
                     continue
@@ -479,6 +479,10 @@ def run(path, budget):
 
     if not last_weekly or (dt.date.today() - dt.date.fromisoformat(last_weekly)).days >= 6:
         step(weekly, path)
+        if api.unreachable:
+            # The weekly list is slow on comics.org's side; don't let it stop everything else today.
+            print("The weekly list didn't load; trying again tomorrow, carrying on with the rest")
+            api.unreachable = False
     step(details, path, budget, only_new=True)  # this week's books get barcodes and covers first
     api.stop_at = api.used + int((api.budget - api.used) * 0.65)
     step(discover, path, budget)
