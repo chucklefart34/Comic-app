@@ -33,6 +33,7 @@ jobs:
       GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
       GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
       CATALOG_PUBLISHERS: ${{ github.event.inputs.publishers || 'Marvel,DC,Image' }}
+      PYTHONUNBUFFERED: "1"  # show progress in the log as it happens
     steps:
       - uses: actions/checkout@v4
 
