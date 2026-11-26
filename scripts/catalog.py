@@ -112,6 +112,8 @@ class Api:
         self.last = 0.0
         self.unreachable = False
         self.stop_at = None  # a step's own share of the budget
+        # Stop in time to package and publish before GitHub's job time limit.
+        self.deadline = time.time() + 60 * float(os.environ.get("CATALOG_MINUTES", "115"))
 
     def get(self, url, timeout=120):
         if self.unreachable:
@@ -119,6 +121,9 @@ class Api:
         attempts = 5
         for attempt in range(attempts):
             if self.used >= self.budget or (self.stop_at is not None and self.used >= self.stop_at):
+                raise BudgetSpent()
+            if time.time() > self.deadline:
+                print("  out of time for this run; saving what's done")
                 raise BudgetSpent()
             wait = float(os.environ.get("CATALOG_PACE", "2.6")) - (time.time() - self.last)  # about 23 a minute
             if wait > 0:

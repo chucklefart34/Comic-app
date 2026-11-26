@@ -28,7 +28,7 @@ concurrency:
 jobs:
   catalog:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 170
     env:
       GCD_EMAIL: ${{ secrets.GCD_EMAIL }}
       GCD_PASSWORD: ${{ secrets.GCD_PASSWORD }}
