@@ -113,10 +113,11 @@ class Api:
         self.unreachable = False
         self.stop_at = None  # a step's own share of the budget
 
-    def get(self, url, timeout=60):
+    def get(self, url, timeout=120):
         if self.unreachable:
             raise Unreachable()
-        for attempt in range(3):
+        attempts = 5
+        for attempt in range(attempts):
             if self.used >= self.budget or (self.stop_at is not None and self.used >= self.stop_at):
                 raise BudgetSpent()
             wait = float(os.environ.get("CATALOG_PACE", "2.6")) - (time.time() - self.last)  # about 23 a minute
@@ -141,20 +142,20 @@ class Api:
                     return None
                 if error.code in (401, 403):
                     sys.exit(f"comics.org refused the login ({error.code}). Check GCD_EMAIL / GCD_PASSWORD.")
-                if attempt == 2:
+                if attempt == attempts - 1:
                     self.unreachable = True
                     raise Unreachable()
-                time.sleep(30 * (attempt + 1))
+                time.sleep(30 * 2 ** attempt)  # 30s, 1, 2, 4 minutes
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as error:
                 print(f"  comics.org didn't answer ({error}); retrying")
-                if attempt == 2:
+                if attempt == attempts - 1:
                     self.unreachable = True
                     print("  comics.org isn't answering; saving what's done and stopping for today")
                     raise Unreachable()
-                time.sleep(30 * (attempt + 1))
+                time.sleep(30 * 2 ** attempt)  # 30s, 1, 2, 4 minutes
         return None
 
-    def pages(self, url, timeout=60):
+    def pages(self, url, timeout=120):
         while url:
             page = self.get(url, timeout)
             if not page:
